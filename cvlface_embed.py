@@ -108,6 +108,52 @@ def _torch_default_device_for_inference(compute_device: torch.device):
 
 
 @contextmanager
+def _cvlface_weight_path_patch():
+    """
+    CVLFace ``wrapper.py`` always loads ``pretrained_model/model.pt``. Hugging Face
+    snapshots often ship ``model.safetensors`` at the repo root instead. Patch the
+    checkpoint's ``load_state_dict_from_path`` while cwd is the checkpoint root.
+
+    ``BaseModel.load_state_dict_from_path`` calls the *module global*
+    ``load_state_dict_from_path`` in ``models.base`` (from ``from .utils import``), so
+    both ``models.base`` and ``models.base.utils`` must be patched.
+    """
+    import models.base as cvl_b
+    import models.base.utils as cvl_u
+
+    orig_fn = cvl_b.load_state_dict_from_path
+
+    def _resolve_weights_path(p: str) -> str:
+        key = p.replace("\\", "/")
+        if key != "pretrained_model/model.pt":
+            return p
+        for rel in (
+            "pretrained_model/model.pt",
+            "pretrained_model/model.safetensors",
+            "model.safetensors",
+        ):
+            if os.path.isfile(rel):
+                return rel
+        raise FileNotFoundError(
+            "CVLFace checkpoint has no weight file. Under the checkpoint folder, add one of:\n"
+            "  pretrained_model/model.pt\n"
+            "  pretrained_model/model.safetensors\n"
+            "  model.safetensors (repo root, as on Hugging Face)"
+        )
+
+    def patched(p: str):
+        return orig_fn(_resolve_weights_path(p))
+
+    cvl_b.load_state_dict_from_path = patched
+    cvl_u.load_state_dict_from_path = patched
+    try:
+        yield
+    finally:
+        cvl_b.load_state_dict_from_path = orig_fn
+        cvl_u.load_state_dict_from_path = orig_fn
+
+
+@contextmanager
 def _cvlface_force_linspace_cpu():
     """
     CVLFace vit.py builds drop-path rates with ``torch.linspace(...).item()``. Transformers
@@ -196,8 +242,9 @@ def load_embedder(local_model_dir: str, prefer_cuda: bool) -> FaceEmbedderHandle
     try:
         try:
             with _checkpoint_import_isolation(path):
-                with _cvlface_force_linspace_cpu():
-                    model = AutoModel.from_pretrained(path, **fp_kw)
+                with _cvlface_weight_path_patch():
+                    with _cvlface_force_linspace_cpu():
+                        model = AutoModel.from_pretrained(path, **fp_kw)
         finally:
             _evict_checkpoint_models_modules(path)
     finally:
@@ -212,7 +259,7 @@ def load_embedder(local_model_dir: str, prefer_cuda: bool) -> FaceEmbedderHandle
     return FaceEmbedderHandle(model=model, device=device, dtype=dtype, model_path=path)
 
 
-_EMBEDDER_CACHE_VER = 4
+_EMBEDDER_CACHE_VER = 5
 _EMBEDDER_CACHE: dict[tuple, FaceEmbedderHandle] = {}
 
 

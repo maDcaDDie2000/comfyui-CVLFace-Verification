@@ -25,10 +25,11 @@ ComfyUI/models/cvlface/vit_kprpe_webface12m/
   config.json
   wrapper.py
   models/
-  pretrained_model/
+  pretrained_model/          # optional if you use root safetensors
+  model.safetensors          # typical Hugging Face root weights (supported)
 ```
 
-Also place every other file from the published **CVLFace AdaFace ViT base KP-RPE WebFace12M** checkpoint in that same directory, including all weight files from that checkpoint (source: [cvlface_adaface_vit_base_kprpe_webface12m](https://huggingface.co/minchul/cvlface_adaface_vit_base_kprpe_webface12m)).
+Also copy the rest of the published **CVLFace AdaFace ViT base KP-RPE WebFace12M** tree (source: [cvlface_adaface_vit_base_kprpe_webface12m](https://huggingface.co/minchul/cvlface_adaface_vit_base_kprpe_webface12m)). Weights may be **`model.safetensors`** at this folder root, or **`pretrained_model/model.pt`** / **`pretrained_model/model.safetensors`**; the loader resolves the path the upstream wrapper expects.
 
 ```
 ComfyUI/models/insightface/models/buffalo_l/
