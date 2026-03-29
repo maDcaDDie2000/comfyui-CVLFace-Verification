@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import glob
 import inspect
 import os
 import sys
@@ -108,37 +109,58 @@ def _torch_default_device_for_inference(compute_device: torch.device):
 
 
 @contextmanager
-def _cvlface_weight_path_patch():
+def _cvlface_weight_path_patch(checkpoint_root: str):
     """
     CVLFace ``wrapper.py`` always loads ``pretrained_model/model.pt``. Hugging Face
     snapshots often ship ``model.safetensors`` at the repo root instead. Patch the
-    checkpoint's ``load_state_dict_from_path`` while cwd is the checkpoint root.
+    checkpoint's ``load_state_dict_from_path``.
 
-    ``BaseModel.load_state_dict_from_path`` calls the *module global*
-    ``load_state_dict_from_path`` in ``models.base`` (from ``from .utils import``), so
-    both ``models.base`` and ``models.base.utils`` must be patched.
+    Paths must be resolved with **absolute** paths under ``checkpoint_root``: Transformers
+    may change ``os.getcwd()`` during ``from_pretrained``, so relative paths are unreliable.
+
+    ``BaseModel.load_state_dict_from_path`` uses the module global in ``models.base``;
+    patch both ``models.base`` and ``models.base.utils``.
     """
     import models.base as cvl_b
     import models.base.utils as cvl_u
 
+    root = os.path.abspath(checkpoint_root)
     orig_fn = cvl_b.load_state_dict_from_path
 
     def _resolve_weights_path(p: str) -> str:
         key = p.replace("\\", "/")
         if key != "pretrained_model/model.pt":
             return p
-        for rel in (
-            "pretrained_model/model.pt",
-            "pretrained_model/model.safetensors",
-            "model.safetensors",
-        ):
-            if os.path.isfile(rel):
-                return rel
+        candidates = [
+            os.path.join(root, "pretrained_model", "model.pt"),
+            os.path.join(root, "pretrained_model", "model.safetensors"),
+            os.path.join(root, "model.safetensors"),
+            os.path.join(root, "pytorch_model.bin"),
+            os.path.join(root, "pretrained_model", "pytorch_model.bin"),
+        ]
+        for c in candidates:
+            if os.path.isfile(c):
+                return c
+        lone = sorted(glob.glob(os.path.join(root, "*.safetensors")))
+        if len(lone) == 1 and os.path.isfile(lone[0]):
+            return lone[0]
+        lone_pm = sorted(glob.glob(os.path.join(root, "pretrained_model", "*.safetensors")))
+        if len(lone_pm) == 1 and os.path.isfile(lone_pm[0]):
+            return lone_pm[0]
+        hint = ""
+        try:
+            top = sorted(os.listdir(root))[:30]
+            hint = f"\nCheckpoint folder (absolute): {root}\nTop-level entries: {top}\n"
+        except OSError:
+            hint = f"\nCheckpoint folder (absolute): {root}\n"
         raise FileNotFoundError(
-            "CVLFace checkpoint has no weight file. Under the checkpoint folder, add one of:\n"
+            "CVLFace: no weight file found. Expected one of (under that folder):\n"
             "  pretrained_model/model.pt\n"
             "  pretrained_model/model.safetensors\n"
-            "  model.safetensors (repo root, as on Hugging Face)"
+            "  model.safetensors\n"
+            "  pytorch_model.bin\n"
+            "  or a single *.safetensors at the checkpoint root or in pretrained_model/\n"
+            f"{hint}"
         )
 
     def patched(p: str):
@@ -242,7 +264,7 @@ def load_embedder(local_model_dir: str, prefer_cuda: bool) -> FaceEmbedderHandle
     try:
         try:
             with _checkpoint_import_isolation(path):
-                with _cvlface_weight_path_patch():
+                with _cvlface_weight_path_patch(path):
                     with _cvlface_force_linspace_cpu():
                         model = AutoModel.from_pretrained(path, **fp_kw)
         finally:
@@ -259,7 +281,7 @@ def load_embedder(local_model_dir: str, prefer_cuda: bool) -> FaceEmbedderHandle
     return FaceEmbedderHandle(model=model, device=device, dtype=dtype, model_path=path)
 
 
-_EMBEDDER_CACHE_VER = 5
+_EMBEDDER_CACHE_VER = 6
 _EMBEDDER_CACHE: dict[tuple, FaceEmbedderHandle] = {}
 
 

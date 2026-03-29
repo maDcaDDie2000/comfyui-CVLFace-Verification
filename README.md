@@ -29,7 +29,7 @@ ComfyUI/models/cvlface/vit_kprpe_webface12m/
   model.safetensors          # typical Hugging Face root weights (supported)
 ```
 
-Also copy the rest of the published **CVLFace AdaFace ViT base KP-RPE WebFace12M** tree (source: [cvlface_adaface_vit_base_kprpe_webface12m](https://huggingface.co/minchul/cvlface_adaface_vit_base_kprpe_webface12m)). Weights may be **`model.safetensors`** at this folder root, or **`pretrained_model/model.pt`** / **`pretrained_model/model.safetensors`**; the loader resolves the path the upstream wrapper expects.
+Also copy the rest of the published **CVLFace AdaFace ViT base KP-RPE WebFace12M** tree (source: [cvlface_adaface_vit_base_kprpe_webface12m](https://huggingface.co/minchul/cvlface_adaface_vit_base_kprpe_webface12m)). Weights may be **`model.safetensors`** at this folder root, **`pytorch_model.bin`**, or **`pretrained_model/model.pt`** / **`model.safetensors`**; the loader maps the hardcoded upstream path to these files using **absolute paths** (so it still works if Comfy changes the process working directory during load). If there is exactly one **`*.safetensors`** in the checkpoint root or in **`pretrained_model/`**, that file is used.
 
 ```
 ComfyUI/models/insightface/models/buffalo_l/
