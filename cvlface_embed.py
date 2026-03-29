@@ -108,6 +108,30 @@ def _torch_default_device_for_inference(compute_device: torch.device):
 
 
 @contextmanager
+def _cvlface_force_linspace_cpu():
+    """
+    CVLFace vit.py builds drop-path rates with ``torch.linspace(...).item()``. Transformers
+    can still run ``__init__`` under a meta/accelerate context where the default device is
+    ``meta``, so ``linspace`` returns meta tensors and ``.item()`` crashes. Force concrete
+    CPU linspace whenever the call would otherwise use ``meta`` or omit ``device``.
+    """
+    real = torch.linspace
+
+    def patched(*args, **kwargs):
+        kwargs = dict(kwargs)
+        d = kwargs.get("device")
+        if d is None or _is_meta_device(d):
+            kwargs["device"] = torch.device("cpu")
+        return real(*args, **kwargs)
+
+    torch.linspace = patched  # type: ignore[method-assign]
+    try:
+        yield
+    finally:
+        torch.linspace = real  # type: ignore[method-assign]
+
+
+@contextmanager
 def _checkpoint_import_isolation(checkpoint_dir: str):
     """
     CVLFace's remote wrapper does ``from models import get_model``. ComfyUI puts many
@@ -154,6 +178,8 @@ def load_embedder(local_model_dir: str, prefer_cuda: bool) -> FaceEmbedderHandle
     _sig = inspect.signature(AutoModel.from_pretrained)
     if "low_cpu_mem_usage" in _sig.parameters:
         fp_kw["low_cpu_mem_usage"] = False
+    if "device_map" in _sig.parameters:
+        fp_kw["device_map"] = None
 
     prev_dd = None
     _restore_dd = False
@@ -170,7 +196,8 @@ def load_embedder(local_model_dir: str, prefer_cuda: bool) -> FaceEmbedderHandle
     try:
         try:
             with _checkpoint_import_isolation(path):
-                model = AutoModel.from_pretrained(path, **fp_kw)
+                with _cvlface_force_linspace_cpu():
+                    model = AutoModel.from_pretrained(path, **fp_kw)
         finally:
             _evict_checkpoint_models_modules(path)
     finally:
@@ -185,7 +212,7 @@ def load_embedder(local_model_dir: str, prefer_cuda: bool) -> FaceEmbedderHandle
     return FaceEmbedderHandle(model=model, device=device, dtype=dtype, model_path=path)
 
 
-_EMBEDDER_CACHE_VER = 3
+_EMBEDDER_CACHE_VER = 4
 _EMBEDDER_CACHE: dict[tuple, FaceEmbedderHandle] = {}
 
 

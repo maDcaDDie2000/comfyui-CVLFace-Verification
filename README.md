@@ -60,7 +60,7 @@ If no **CVLFace** nodes show in the Add Node menu, check the ComfyUI console for
 
 If loading KP-RPE fails with **`cannot import name 'get_model' from 'models'`**, another custom node (for example **comfyui-rmbg**) has a top-level **`models`** package that was shadowing the checkpoint. This pack isolates the checkpoint on `sys.path` during load and clears that import afterward; update to the latest pack code if you still see the error.
 
-On load you may see **`Failed to import cuda/cpp RPEIndexFunction`** followed by **`setup.py install`** noise: that comes from upstream CVLFace trying to compile optional RPE ops; the model can still run with the slower pure-PyTorch RPE path. **`Tensor.item() cannot be called on meta tensors`** is addressed by disabling Transformers’ low-RAM meta init during load, avoiding restoring PyTorch’s default device to **`meta`** after load, and running **`compute_embedding`** (Face Reference Profile / **Face Compare KP-RPE**) under the same default device as the model weights.
+On load you may see **`Failed to import cuda/cpp RPEIndexFunction`** followed by **`setup.py install`** noise: that comes from upstream CVLFace trying to compile optional RPE ops; the model can still run with the slower pure-PyTorch RPE path. **`Tensor.item() cannot be called on meta tensors`** during **CVLFace Loader** is addressed by forcing **`torch.linspace`** onto **CPU** for the duration of **`from_pretrained`** (CVLFace’s `vit.py` uses `linspace(...).item()` for drop-path rates; Transformers/accelerate can still run that under a meta context). The loader also sets **`low_cpu_mem_usage=False`**, **`device_map=None`** when supported, and avoids restoring a **`meta`** default device after load.
 
 ## Nodes
 
