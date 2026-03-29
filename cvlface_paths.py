@@ -10,6 +10,8 @@ import os
 CVLFACE_SUBDIR = "cvlface"
 # Must match directory under ComfyUI/models/cvlface/ where the user places the checkpoint.
 CVLFACE_CHECKPOINT_NAME = "vit_kprpe_webface12m"
+# ComfyUI Add Node → right-click menu group (ties UI to the cvlface models area).
+CVLF_NODE_MENU_CATEGORY = "CVLFace"
 
 INSIGHTFACE_SUBDIR = "insightface"
 INSIGHTFACE_BUFFALO_NAME = "buffalo_l"

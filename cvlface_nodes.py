@@ -15,6 +15,7 @@ from cvlface_align import align_one_face, draw_landmarks_on_crop
 from cvlface_embed import compute_embedding, get_cached_embedder
 from cvlface_hash import digest_any, tensor_digest
 from cvlface_paths import (
+    CVLF_NODE_MENU_CATEGORY,
     assert_cvlface_checkpoint,
     checkpoint_mtime_key,
     cvlface_checkpoint_dir,
@@ -93,7 +94,7 @@ class CVLFaceLoader:
     RETURN_TYPES = ("FACE_EMBEDDER",)
     RETURN_NAMES = ("face_embedder",)
     FUNCTION = "load"
-    CATEGORY = "CVLFace"
+    CATEGORY = CVLF_NODE_MENU_CATEGORY
 
     def load(self, device: str):
         path = cvlface_checkpoint_dir()
@@ -130,7 +131,7 @@ class FaceAlign:
     RETURN_TYPES = ("IMAGE", "IMAGE", "FACE_META")
     RETURN_NAMES = ("aligned_face", "landmarks_preview", "face_meta")
     FUNCTION = "align"
-    CATEGORY = "CVLFace"
+    CATEGORY = CVLF_NODE_MENU_CATEGORY
 
     def align(
         self,
@@ -203,7 +204,7 @@ class FaceReferenceProfile:
     RETURN_TYPES = ("FACE_PROFILE",)
     RETURN_NAMES = ("face_profile",)
     FUNCTION = "build"
-    CATEGORY = "CVLFace"
+    CATEGORY = CVLF_NODE_MENU_CATEGORY
 
     def build(
         self,
@@ -288,7 +289,7 @@ class FaceCompareKPRPE:
         "debug_preview",
     )
     FUNCTION = "compare"
-    CATEGORY = "CVLFace"
+    CATEGORY = CVLF_NODE_MENU_CATEGORY
 
     def compare(
         self,

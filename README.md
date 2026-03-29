@@ -56,7 +56,11 @@ The loader always reads CVLFace from **`models/cvlface/vit_kprpe_webface12m/`** 
 
 `transformers` loads the CVLFace tree with **`from_pretrained(local_dir, local_files_only=True)`** only.
 
+If no **CVLFace** nodes show in the Add Node menu, check the ComfyUI console for **`[comfyui-CVLFace-Verification] Failed to import cvlface_nodes`** (usually a missing `pip install -r requirements.txt` dependency).
+
 ## Nodes
+
+In the graph editor, use **Add Node** (double-click / right-click): all pack nodes are grouped under **`CVLFace`**, matching the **`models/cvlface/`** layout.
 
 | Node | Role |
 |------|------|

@@ -6,6 +6,7 @@ All weights are read from ComfyUI/models subfolders only — no downloads, no Hu
 
 import os
 import sys
+import traceback
 
 _pkg_dir = os.path.dirname(os.path.abspath(__file__))
 if _pkg_dir not in sys.path:
@@ -24,6 +25,19 @@ try:
 except Exception:
     pass
 
-from nodes import NODE_CLASS_MAPPINGS, NODE_DISPLAY_NAME_MAPPINGS
+NODE_CLASS_MAPPINGS = {}
+NODE_DISPLAY_NAME_MAPPINGS = {}
+
+try:
+    import cvlface_nodes
+
+    NODE_CLASS_MAPPINGS = cvlface_nodes.NODE_CLASS_MAPPINGS
+    NODE_DISPLAY_NAME_MAPPINGS = cvlface_nodes.NODE_DISPLAY_NAME_MAPPINGS
+except Exception:
+    print(
+        "[comfyui-CVLFace-Verification] Failed to import cvlface_nodes "
+        "(see traceback; common cause: missing pip deps such as insightface, transformers, opencv):\n"
+        + traceback.format_exc()
+    )
 
 __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS"]
