@@ -8,6 +8,16 @@ This pack **does not download** weights, **does not call** the Hugging Face Hub/
 
 Paths resolve from ComfyUI **`folder_paths.models_dir`** (including **`extra_model_paths.yaml`** overrides of the models directory).
 
+### Hugging Face (manual download source for CVLFace)
+
+This pack expects the **WebFace12M** KP-RPE checkpoint tree. Download or clone the snapshot from Hugging Face and copy it into **`models/cvlface/vit_kprpe_webface12m/`** (see layout below).
+
+- **Required checkpoint (matches the fixed folder name):** [minchul/cvlface_adaface_vit_base_kprpe_webface12m](https://huggingface.co/minchul/cvlface_adaface_vit_base_kprpe_webface12m)
+- **Same architecture, WebFace4M training:** [minchul/cvlface_adaface_vit_base_kprpe_webface4m](https://huggingface.co/minchul/cvlface_adaface_vit_base_kprpe_webface4m) (not used by this pack unless you retarget code and folder names)
+- **Author / related models:** [huggingface.co/minchul](https://huggingface.co/minchul)
+
+**buffalo_l** ONNX files are **not** distributed through these Hugging Face model cards; obtain them from the **InsightFace** model zoo (see layout below).
+
 ## Required directory layout
 
 ```
@@ -18,7 +28,7 @@ ComfyUI/models/cvlface/vit_kprpe_webface12m/
   pretrained_model/
 ```
 
-Also place every other file from the published **CVLFace AdaFace ViT base KP-RPE WebFace12M** checkpoint in that same directory, including all weight files from that checkpoint.
+Also place every other file from the published **CVLFace AdaFace ViT base KP-RPE WebFace12M** checkpoint in that same directory, including all weight files from that checkpoint (source: [cvlface_adaface_vit_base_kprpe_webface12m](https://huggingface.co/minchul/cvlface_adaface_vit_base_kprpe_webface12m)).
 
 ```
 ComfyUI/models/insightface/models/buffalo_l/
