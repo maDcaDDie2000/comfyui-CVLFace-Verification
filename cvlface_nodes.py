@@ -235,7 +235,7 @@ class FaceReferenceProfile:
     @classmethod
     def IS_CHANGED(
         cls,
-        face_embedder: FaceEmbedderHandle,
+        face_embedder: Optional[FaceEmbedderHandle],
         ref_image: torch.Tensor,
         align_mode: str,
         face_selection: str,
@@ -246,6 +246,18 @@ class FaceReferenceProfile:
         extra_ref_images: Optional[torch.Tensor] = None,
     ):
         ex = tensor_digest(extra_ref_images) if extra_ref_images is not None else "noextra"
+        if face_embedder is None:
+            return digest_any(
+                "no_embedder",
+                tensor_digest(ref_image),
+                ex,
+                align_mode,
+                face_selection,
+                face_index,
+                det_thresh,
+                det_size,
+                insightface_ctx,
+            )
         return digest_any(
             face_embedder.model_path,
             str(face_embedder.device),
@@ -353,8 +365,8 @@ class FaceCompareKPRPE:
     @classmethod
     def IS_CHANGED(
         cls,
-        face_embedder: FaceEmbedderHandle,
-        face_profile: FaceProfile,
+        face_embedder: Optional[FaceEmbedderHandle],
+        face_profile: Optional[FaceProfile],
         target_image: torch.Tensor,
         align_mode: str,
         aggregate: str,
@@ -365,6 +377,19 @@ class FaceCompareKPRPE:
         det_size: int,
         insightface_ctx: str,
     ):
+        if face_embedder is None or face_profile is None:
+            return digest_any(
+                "disconnected",
+                tensor_digest(target_image),
+                align_mode,
+                aggregate,
+                match_threshold,
+                face_selection,
+                face_index,
+                det_thresh,
+                det_size,
+                insightface_ctx,
+            )
         ref_h = (
             hashlib.sha256(face_profile.embeddings.tobytes()).hexdigest()
             if face_profile.embeddings.size

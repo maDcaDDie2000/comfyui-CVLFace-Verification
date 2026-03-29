@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+import sys
+from contextlib import contextmanager
 
 import numpy as np
 import torch
@@ -11,10 +13,81 @@ import torch.nn.functional as F
 from cvlface_types import FaceEmbedderHandle
 
 
+def _evict_checkpoint_models_modules(checkpoint_dir: str) -> None:
+    """
+    Drop ``models`` / ``models.*`` entries that were loaded from this checkpoint so a
+    later ``import models`` resolves to another extension (e.g. comfyui-rmbg) again.
+
+    Transformers may execute remote code from the HF modules cache (path differs from
+    ``checkpoint_dir``); match also by the fixed checkpoint folder name.
+    """
+    from cvlface_paths import CVLFACE_CHECKPOINT_NAME
+
+    ck = os.path.normcase(os.path.abspath(checkpoint_dir) + os.sep)
+    tag = os.path.normcase(CVLFACE_CHECKPOINT_NAME)
+
+    def _path_marks_cvlface(*parts: str) -> bool:
+        for raw in parts:
+            if not raw:
+                continue
+            n = os.path.normcase(str(raw))
+            if n.startswith(ck) or tag in n:
+                return True
+        return False
+
+    keys = [k for k in sys.modules if k == "models" or k.startswith("models.")]
+    keys.sort(key=len, reverse=True)
+    for key in keys:
+        mod = sys.modules.get(key)
+        if mod is None:
+            continue
+        under = False
+        fn = getattr(mod, "__file__", None)
+        if fn and _path_marks_cvlface(fn):
+            under = True
+        if not under:
+            for p in getattr(mod, "__path__", []) or []:
+                if _path_marks_cvlface(str(p), str(p) + os.sep):
+                    under = True
+                    break
+        if under:
+            del sys.modules[key]
+
+
 def _pick_device(prefer_cuda: bool) -> torch.device:
     if prefer_cuda and torch.cuda.is_available():
         return torch.device("cuda")
     return torch.device("cpu")
+
+
+@contextmanager
+def _checkpoint_import_isolation(checkpoint_dir: str):
+    """
+    CVLFace's remote wrapper does ``from models import get_model``. ComfyUI puts many
+    custom_node folders on sys.path, so a different top-level ``models`` package (e.g.
+    comfyui-rmbg/models) can shadow the checkpoint's ``models/``. Prepend the checkpoint
+    root and chdir so imports and relative file opens match upstream expectations.
+    """
+    path = os.path.abspath(checkpoint_dir)
+    old_cwd = os.getcwd()
+    removed_from_path = False
+    try:
+        while path in sys.path:
+            sys.path.remove(path)
+        sys.path.insert(0, path)
+        removed_from_path = True
+        os.chdir(path)
+        yield
+    finally:
+        try:
+            os.chdir(old_cwd)
+        except OSError:
+            pass
+        if removed_from_path:
+            try:
+                sys.path.remove(path)
+            except ValueError:
+                pass
 
 
 def load_embedder(local_model_dir: str, prefer_cuda: bool) -> FaceEmbedderHandle:
@@ -27,12 +100,16 @@ def load_embedder(local_model_dir: str, prefer_cuda: bool) -> FaceEmbedderHandle
     prev_off = os.environ.get("HF_HUB_OFFLINE")
     os.environ["HF_HUB_OFFLINE"] = "1"
     try:
-        model = AutoModel.from_pretrained(
-            path,
-            trust_remote_code=True,
-            torch_dtype=dtype,
-            local_files_only=True,
-        )
+        try:
+            with _checkpoint_import_isolation(path):
+                model = AutoModel.from_pretrained(
+                    path,
+                    trust_remote_code=True,
+                    torch_dtype=dtype,
+                    local_files_only=True,
+                )
+        finally:
+            _evict_checkpoint_models_modules(path)
     finally:
         if prev_off is None:
             os.environ.pop("HF_HUB_OFFLINE", None)
