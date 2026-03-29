@@ -1,0 +1,14 @@
+# ComfyUI already ships torch; pinned loosely for Manager installs.
+# Weights live under ComfyUI/models/ only — no Hub downloads from this pack.
+transformers>=4.33.0
+safetensors>=0.4.0
+omegaconf>=2.3.0
+pyyaml>=6.0
+easydict>=1.10
+timm>=0.9.0
+insightface>=0.7.3
+onnxruntime>=1.16.0
+opencv-python-headless>=4.8.0
+numpy>=1.24.0,<2.0.0
+Pillow>=10.0.0
+scikit-image>=0.22.0
