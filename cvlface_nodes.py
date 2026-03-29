@@ -208,7 +208,7 @@ class FaceReferenceProfile:
 
     def build(
         self,
-        face_embedder: FaceEmbedderHandle,
+        face_embedder: Optional[FaceEmbedderHandle],
         ref_image: torch.Tensor,
         align_mode: str,
         face_selection: str,
@@ -218,6 +218,10 @@ class FaceReferenceProfile:
         insightface_ctx: str,
         extra_ref_images: Optional[torch.Tensor] = None,
     ):
+        if face_embedder is None:
+            raise RuntimeError(
+                "Face Reference Profile: connect the output of **CVLFace Loader** (face_embedder)."
+            )
         ctx_id = 0 if insightface_ctx == "cuda" else -1
         prof = _build_profile_tensor(
             ref_image,
@@ -305,8 +309,8 @@ class FaceCompareKPRPE:
 
     def compare(
         self,
-        face_embedder: FaceEmbedderHandle,
-        face_profile: FaceProfile,
+        face_embedder: Optional[FaceEmbedderHandle],
+        face_profile: Optional[FaceProfile],
         target_image: torch.Tensor,
         align_mode: str,
         aggregate: str,
@@ -318,6 +322,15 @@ class FaceCompareKPRPE:
         insightface_ctx: str,
     ):
         import cv2
+
+        if face_embedder is None:
+            raise RuntimeError(
+                "Face Compare KP-RPE: connect **CVLFace Loader** → face_embedder (same wire as your profile build)."
+            )
+        if face_profile is None:
+            raise RuntimeError(
+                "Face Compare KP-RPE: connect **Face Reference Profile** → face_profile."
+            )
 
         ctx_id = 0 if insightface_ctx == "cuda" else -1
         bundle = align_one_face(
