@@ -227,18 +227,52 @@ def _cvlface_transformers_compat_patch():
         yield
         return
 
-    orig_finalize = PreTrainedModel._finalize_model_loading.__func__
+    descriptor = PreTrainedModel.__dict__.get("_finalize_model_loading")
+    if descriptor is None:
+        yield
+        return
 
-    @classmethod
-    def _finalize_with_post_init(cls, model, load_config, loading_info):
+    if isinstance(descriptor, staticmethod):
+        orig_finalize = descriptor.__func__
+
+        @staticmethod
+        def _finalize_with_post_init(model, load_config, loading_info):
+            _ensure_post_init_for_tied_weights(model)
+            return orig_finalize(model, load_config, loading_info)
+
+        PreTrainedModel._finalize_model_loading = _finalize_with_post_init
+        try:
+            yield
+        finally:
+            PreTrainedModel._finalize_model_loading = staticmethod(orig_finalize)
+        return
+
+    if isinstance(descriptor, classmethod):
+        orig_finalize = descriptor.__func__
+
+        @classmethod
+        def _finalize_with_post_init(cls, model, load_config, loading_info):
+            _ensure_post_init_for_tied_weights(model)
+            return orig_finalize(cls, model, load_config, loading_info)
+
+        PreTrainedModel._finalize_model_loading = _finalize_with_post_init
+        try:
+            yield
+        finally:
+            PreTrainedModel._finalize_model_loading = classmethod(orig_finalize)
+        return
+
+    orig_finalize = descriptor
+
+    def _finalize_with_post_init(model, load_config, loading_info):
         _ensure_post_init_for_tied_weights(model)
-        return orig_finalize(cls, model, load_config, loading_info)
+        return orig_finalize(model, load_config, loading_info)
 
     PreTrainedModel._finalize_model_loading = _finalize_with_post_init
     try:
         yield
     finally:
-        PreTrainedModel._finalize_model_loading = classmethod(orig_finalize)
+        PreTrainedModel._finalize_model_loading = orig_finalize
 
 
 @contextmanager
@@ -356,7 +390,7 @@ def load_embedder(local_model_dir: str, prefer_cuda: bool) -> FaceEmbedderHandle
     return FaceEmbedderHandle(model=model, device=device, dtype=dtype, model_path=path)
 
 
-_EMBEDDER_CACHE_VER = 7
+_EMBEDDER_CACHE_VER = 8
 _EMBEDDER_CACHE: dict[tuple, FaceEmbedderHandle] = {}
 
 
