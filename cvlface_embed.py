@@ -199,6 +199,79 @@ def _cvlface_force_linspace_cpu():
         torch.linspace = real  # type: ignore[method-assign]
 
 
+def _ensure_post_init_for_tied_weights(model) -> None:
+    """
+    Transformers >= ~4.50 expects ``all_tied_weights_keys`` (set in ``post_init()``).
+    CVLFace ``wrapper.py`` calls ``PreTrainedModel.__init__`` but never ``post_init()``,
+    so ``from_pretrained`` fails in ``_finalize_model_loading``.
+    """
+    try:
+        _ = model.all_tied_weights_keys  # noqa: F841
+        return
+    except AttributeError:
+        pass
+    post_init = getattr(model, "post_init", None)
+    if callable(post_init):
+        post_init()
+
+
+@contextmanager
+def _cvlface_transformers_compat_patch():
+    """
+    Patch PreTrainedModel finalize so remote-code checkpoints missing post_init still load.
+    Scoped to the CVLFace ``from_pretrained`` call only.
+    """
+    try:
+        from transformers.modeling_utils import PreTrainedModel
+    except ImportError:
+        yield
+        return
+
+    orig_finalize = PreTrainedModel._finalize_model_loading.__func__
+
+    @classmethod
+    def _finalize_with_post_init(cls, model, load_config, loading_info):
+        _ensure_post_init_for_tied_weights(model)
+        return orig_finalize(cls, model, load_config, loading_info)
+
+    PreTrainedModel._finalize_model_loading = _finalize_with_post_init
+    try:
+        yield
+    finally:
+        PreTrainedModel._finalize_model_loading = classmethod(orig_finalize)
+
+
+@contextmanager
+def _cvlface_wrapper_post_init_patch():
+    """
+    Belt-and-suspenders: patch CVLFace ``wrapper.CVLFaceRecognitionModel.__init__`` so
+    ``post_init()`` runs after the inner ViT is built when transformers imports wrapper
+    from the checkpoint directory.
+    """
+    try:
+        import wrapper as cvl_wrapper
+    except ImportError:
+        yield
+        return
+
+    cls = getattr(cvl_wrapper, "CVLFaceRecognitionModel", None)
+    if cls is None:
+        yield
+        return
+
+    orig_init = cls.__init__
+
+    def patched_init(self, cfg, *args, **kwargs):
+        orig_init(self, cfg, *args, **kwargs)
+        _ensure_post_init_for_tied_weights(self)
+
+    cls.__init__ = patched_init
+    try:
+        yield
+    finally:
+        cls.__init__ = orig_init
+
+
 @contextmanager
 def _checkpoint_import_isolation(checkpoint_dir: str):
     """
@@ -264,9 +337,11 @@ def load_embedder(local_model_dir: str, prefer_cuda: bool) -> FaceEmbedderHandle
     try:
         try:
             with _checkpoint_import_isolation(path):
-                with _cvlface_weight_path_patch(path):
-                    with _cvlface_force_linspace_cpu():
-                        model = AutoModel.from_pretrained(path, **fp_kw)
+                with _cvlface_transformers_compat_patch():
+                    with _cvlface_wrapper_post_init_patch():
+                        with _cvlface_weight_path_patch(path):
+                            with _cvlface_force_linspace_cpu():
+                                model = AutoModel.from_pretrained(path, **fp_kw)
         finally:
             _evict_checkpoint_models_modules(path)
     finally:
@@ -281,7 +356,7 @@ def load_embedder(local_model_dir: str, prefer_cuda: bool) -> FaceEmbedderHandle
     return FaceEmbedderHandle(model=model, device=device, dtype=dtype, model_path=path)
 
 
-_EMBEDDER_CACHE_VER = 6
+_EMBEDDER_CACHE_VER = 7
 _EMBEDDER_CACHE: dict[tuple, FaceEmbedderHandle] = {}
 
 

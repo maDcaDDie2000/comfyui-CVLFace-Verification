@@ -233,6 +233,7 @@ Verified against the codebase and upstream model layouts:
 | `cannot import name 'get_model' from 'models'` | Another extension shadowing `models` — update this pack; it evicts checkpoint imports after load. |
 | `Failed to import cuda/cpp RPEIndexFunction` / `setup.py` noise | Upstream CVLFace optional CUDA RPE ops; pure PyTorch RPE fallback still works (slower). |
 | `Tensor.item() cannot be called on meta tensors` | Stale loader — restart ComfyUI and re-run **CVLFace Loader** (pack forces CPU linspace and disables meta init). |
+| `'CVLFaceRecognitionModel' object has no attribute 'all_tied_weights_keys'` | Newer **transformers** (4.50+) vs upstream CVLFace `wrapper.py` — update this pack (calls `post_init()` during load). Do not downgrade transformers unless needed for other nodes. |
 | `No face detected` | Lower `det_thresh`, increase `det_size`, or check image content. |
 | InsightFace `cuda` slow or errors | Install **`onnxruntime-gpu`**; CPU wheel ignores GPU. |
 | CVLFace CUDA OOM | Use **CVLFace Loader** `device=cpu` (InsightFace can still use GPU separately). |
