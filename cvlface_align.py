@@ -220,6 +220,62 @@ def align_one_face(
     )
 
 
+def render_compare_debug_preview(
+    crop_bhwc: torch.Tensor,
+    *,
+    match: int,
+    aggregate_score: float,
+    aggregate_mode: str,
+    match_threshold: float,
+    scale: int = 4,
+    banner_h: int = 100,
+) -> torch.Tensor:
+    """Readable debug card: upscaled face + dark caption strip (Comfy preview friendly)."""
+    rgb = (crop_bhwc[0].detach().cpu().clamp(0, 1).numpy() * 255.0).astype(np.uint8)
+    face_bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+    h, w = face_bgr.shape[:2]
+    face_up = cv2.resize(face_bgr, (w * scale, h * scale), interpolation=cv2.INTER_LINEAR)
+    fw, fh = face_up.shape[1], face_up.shape[0]
+
+    canvas = np.zeros((fh + banner_h, fw, 3), dtype=np.uint8)
+    canvas[:fh] = face_up
+    canvas[fh:] = (28, 28, 28)
+
+    status = "MATCH" if match else "NO MATCH"
+    status_color = (80, 220, 80) if match else (80, 80, 255)
+    lines = [
+        (status, status_color, 0.85, 2),
+        (f"score {aggregate_score:.3f}   threshold {match_threshold:.2f}", (240, 240, 240), 0.55, 1),
+        (f"aggregate: {aggregate_mode}", (200, 200, 200), 0.5, 1),
+    ]
+
+    y = fh + 28
+    for text, color, font_scale, thickness in lines:
+        cv2.putText(
+            canvas,
+            text,
+            (12, y),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            font_scale,
+            (0, 0, 0),
+            thickness + 2,
+            cv2.LINE_AA,
+        )
+        cv2.putText(
+            canvas,
+            text,
+            (12, y),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            font_scale,
+            color,
+            thickness,
+            cv2.LINE_AA,
+        )
+        y += int(28 * font_scale + 18)
+
+    return bgr_uint8_to_comfy_bhwc(canvas)
+
+
 def draw_landmarks_on_crop(
     crop_bhwc: torch.Tensor,
     keypoints_112: np.ndarray,

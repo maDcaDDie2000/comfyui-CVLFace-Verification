@@ -11,7 +11,7 @@ from typing import Optional
 import numpy as np
 import torch
 
-from cvlface_align import align_one_face, draw_landmarks_on_crop
+from cvlface_align import align_one_face, draw_landmarks_on_crop, render_compare_debug_preview
 from cvlface_embed import compute_embedding, get_cached_embedder
 from cvlface_hash import digest_any, tensor_digest
 from cvlface_paths import (
@@ -321,8 +321,6 @@ class FaceCompareKPRPE:
         det_size: int,
         insightface_ctx: str,
     ):
-        import cv2
-
         if face_embedder is None:
             raise RuntimeError(
                 "Face Compare KP-RPE: connect **CVLFace Loader** → face_embedder (same wire as your profile build)."
@@ -353,11 +351,13 @@ class FaceCompareKPRPE:
             bundle.dense_landmarks_112,
         )
 
-        rgb = (bundle.image_bhwc[0].detach().cpu().clamp(0, 1).numpy() * 255.0).astype(np.uint8)
-        bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
-        txt = f"match={match} agg={agg:.3f} mode={aggregate}"
-        cv2.putText(bgr, txt, (4, 16), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 0), 1, cv2.LINE_AA)
-        dbg = torch.from_numpy(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0).unsqueeze(0)
+        dbg = render_compare_debug_preview(
+            bundle.image_bhwc,
+            match=match,
+            aggregate_score=float(agg),
+            aggregate_mode=aggregate,
+            match_threshold=float(match_threshold),
+        )
 
         payload = {
             "cosine_similarity": [float(x) for x in scores.tolist()],
