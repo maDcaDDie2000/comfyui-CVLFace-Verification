@@ -276,6 +276,15 @@ class FaceReferenceProfile:
         )
 
 
+def _passed_input_image(target_image: torch.Tensor, match: int) -> torch.Tensor:
+    """Full input image (same frame that was compared) when match passes; empty batch otherwise."""
+    src = target_image[0:1] if target_image.shape[0] > 1 else target_image
+    if match:
+        return src
+    _, h, w, c = src.shape
+    return torch.zeros((0, h, w, c), dtype=src.dtype, device=src.device)
+
+
 class FaceCompareKPRPE:
     @classmethod
     def INPUT_TYPES(cls):
@@ -295,7 +304,7 @@ class FaceCompareKPRPE:
             },
         }
 
-    RETURN_TYPES = ("IMAGE", "IMAGE", "STRING", "FLOAT", "INT", "IMAGE")
+    RETURN_TYPES = ("IMAGE", "IMAGE", "STRING", "FLOAT", "INT", "IMAGE", "IMAGE")
     RETURN_NAMES = (
         "aligned_face",
         "landmarks_preview",
@@ -303,6 +312,7 @@ class FaceCompareKPRPE:
         "aggregate_score",
         "match",
         "debug_preview",
+        "passed_image",
     )
     FUNCTION = "compare"
     CATEGORY = CVLF_NODE_MENU_CATEGORY
@@ -373,6 +383,7 @@ class FaceCompareKPRPE:
             float(agg),
             int(match),
             dbg,
+            _passed_input_image(target_image, match),
         )
 
     @classmethod

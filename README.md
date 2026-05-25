@@ -176,9 +176,9 @@ Compares a target face against a reference profile.
 | | |
 |---|---|
 | **Inputs** | `face_embedder`, `face_profile`, `target_image`; alignment params; `aggregate` (`max` \| `mean` \| `quality_weighted_mean`); `match_threshold` (default `0.35`, cosine similarity on normalized embeddings) |
-| **Outputs** | `aligned_face`, `landmarks_preview`, `per_ref_scores_json`, `aggregate_score`, `match` (`1` = pass), `debug_preview` |
+| **Outputs** | `aligned_face`, `landmarks_preview`, `per_ref_scores_json`, `aggregate_score`, `match` (`1` = pass), `debug_preview`, `passed_image` (full `target_image` passthrough when score ≥ threshold; otherwise empty batch) |
 
-Scores are dot products of L2-normalized embeddings (equivalent to cosine similarity). `match` is `1` when `aggregate_score >= match_threshold`.
+Scores are dot products of L2-normalized embeddings (equivalent to cosine similarity). `match` is `1` when `aggregate_score >= match_threshold`. **`passed_image`** returns the **full input `target_image`** (same resolution, 1:1 passthrough) when the threshold is met, or an **empty image batch** when it is not — wire it to **Save Image** to keep only verified inputs.
 
 ### Typical workflow
 
