@@ -217,7 +217,7 @@ Verified against the codebase and upstream model layouts:
 - **ComfyUI conflicts:** Checkpoint import is isolated on `sys.path` and `models` modules from the checkpoint are evicted after load to avoid clashes with other custom nodes (e.g. **comfyui-rmbg** shadowing `models`).
 - **Meta-device / Transformers:** Drop-path init and default-device handling avoid `Tensor.item() cannot be called on meta tensors` during load and forward.
 - **Weight path patch:** Maps upstream `pretrained_model/model.pt` to HF-style `model.safetensors` / other common filenames.
-- **Alignment:** 106- or 68-point landmarks → five ArcFace control points → similarity warp at 112×112 with a slight zoom-out / upward shift so tilted frontals keep chin and jaw in frame (InsightFace default template places the mouth very low in the crop).
+- **Alignment:** 106- or 68-point landmarks → five ArcFace control points → similarity warp at 112×112. The default ArcFace template is intentionally tight (mouth near the bottom edge); this pack **zooms out and shifts up** so the aligned crop keeps chin/jaw margin comparable to the **reflect-pad** used when SCRFD detects tight square inputs.
 - **Scoring:** Embeddings are L2-normalized in `compute_embedding`; compare uses matrix multiply `@` (cosine similarity).
 
 ---
@@ -234,7 +234,7 @@ Verified against the codebase and upstream model layouts:
 | `Failed to import cuda/cpp RPEIndexFunction` / `setup.py` noise | Upstream CVLFace optional CUDA RPE ops; pure PyTorch RPE fallback still works (slower). |
 | `Tensor.item() cannot be called on meta tensors` | Stale loader — restart ComfyUI and re-run **CVLFace Loader** (pack forces CPU linspace and disables meta init). |
 | `'CVLFaceRecognitionModel' object has no attribute 'all_tied_weights_keys'` | Newer **transformers** (4.50+) vs upstream CVLFace `wrapper.py` — update this pack (calls `post_init()` during load). Do not downgrade transformers unless needed for other nodes. |
-| `No face detected` | Lower `det_thresh`, increase `det_size`, or check image content. Frontal faces with **head tilt** (ear toward shoulder, not a profile view) can still fail if the face box is tight — leave margin around the head or try `face_selection=largest_area`. |
+| `No face detected` / grid row **`R# N/F`** | Often a **tight square crop** after rotation: chin or hair touches the frame edge and SCRFD skips the face. The pack now **reflect-pads** the image and retries at lower `det_thresh` automatically — check the console for `face detect: recovered with … pad`. If still failing, lower `det_thresh` (e.g. `0.3`), increase `det_size` (`960`), or add a little margin around the head before batching refs. |
 | InsightFace `cuda` slow or errors | Install **`onnxruntime-gpu`**; CPU wheel ignores GPU. |
 | CVLFace CUDA OOM | Use **CVLFace Loader** `device=cpu` (InsightFace can still use GPU separately). |
 

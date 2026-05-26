@@ -39,8 +39,13 @@ _ARCFACE_DST_112 = np.array(
 )
 
 # Pull template toward center (zoom out) and shift up so chin/jaw are not clipped on tilted frontals.
-ALIGN_FACE_MARGIN_SCALE = 0.82
-ALIGN_FACE_SHIFT_Y = -4.0
+# (Detection retries pad tight inputs; alignment must not crop tighter than SCRFD tolerates.)
+ALIGN_FACE_MARGIN_SCALE = 0.76
+ALIGN_FACE_SHIFT_Y = -5.0
+
+# Detection: pad tight square crops (rotated head, chin at bottom edge) before SCRFD runs.
+DET_PAD_RATIOS = (0.22, 0.40)
+DET_THRESH_RETRY_SCALE = 0.5
 
 
 def _mean_points(pts: np.ndarray, indices: List[int]) -> np.ndarray:
@@ -392,6 +397,102 @@ def norm_crop2_with_chin_margin(
     return warped, M
 
 
+def _pad_bgr_for_detection(img_bgr: np.ndarray, ratio: float) -> Tuple[np.ndarray, int, int]:
+    """Reflect-pad so faces with chin/hair on the frame edge still look complete to SCRFD."""
+    h, w = img_bgr.shape[:2]
+    py = max(12, int(round(h * ratio)))
+    px = max(12, int(round(w * ratio)))
+    padded = cv2.copyMakeBorder(img_bgr, py, py, px, px, cv2.BORDER_REFLECT_101)
+    return padded, px, py
+
+
+def _shift_face_to_original(face, dx: int, dy: int) -> None:
+    """Map InsightFace detection coords from padded image back to the original crop."""
+    ox = np.array([dx, dy, dx, dy], dtype=np.float32)
+    oy = np.array([dx, dy], dtype=np.float32)
+    if getattr(face, "bbox", None) is not None:
+        face.bbox = np.asarray(face.bbox, dtype=np.float32) - ox
+    if getattr(face, "kps", None) is not None:
+        face.kps = np.asarray(face.kps, dtype=np.float32) - oy
+    for key in ("landmark_2d_106", "landmark_3d_68"):
+        lmk = face.get(key) if hasattr(face, "get") else None
+        if lmk is None:
+            lmk = getattr(face, key, None)
+        if lmk is None:
+            continue
+        arr = np.asarray(lmk, dtype=np.float32).copy()
+        if arr.ndim == 2 and arr.shape[1] >= 2:
+            arr[:, :2] -= oy
+            if hasattr(face, "__setitem__"):
+                face[key] = arr
+            else:
+                setattr(face, key, arr)
+
+
+def _detect_faces_robust(
+    img_bgr: np.ndarray,
+    *,
+    det_size: int,
+    det_thresh: float,
+    ctx_id: int,
+    root: Optional[str],
+    log_prefix: str = "[comfyui-CVLFace-Verification]",
+) -> list:
+    """
+    InsightFace SCRFD with retries for tight crops: reflect-pad borders, lower threshold,
+    and larger det_size when the chin sits on the bottom edge after rotation.
+    """
+    root = root if root else None
+
+    def _run(app, image: np.ndarray, pad_x: int = 0, pad_y: int = 0) -> list:
+        faces = app.get(image)
+        if not faces:
+            return []
+        if pad_x or pad_y:
+            for f in faces:
+                _shift_face_to_original(f, pad_x, pad_y)
+        return list(faces)
+
+    app = get_face_analyzer(det_size=det_size, det_thresh=det_thresh, ctx_id=ctx_id, root=root)
+    faces = _run(app, img_bgr)
+    if faces:
+        return faces
+
+    for ratio in DET_PAD_RATIOS:
+        padded, px, py = _pad_bgr_for_detection(img_bgr, ratio)
+        faces = _run(app, padded, px, py)
+        if faces:
+            print(
+                f"{log_prefix} face detect: recovered with {ratio:.0%} border pad "
+                f"(face likely touched the frame edge — common on rotated square crops)."
+            )
+            return faces
+
+    low_thresh = max(0.05, float(det_thresh) * DET_THRESH_RETRY_SCALE)
+    retry_sizes = [det_size]
+    if det_size < 960:
+        retry_sizes.append(960)
+
+    for size in retry_sizes:
+        app_retry = get_face_analyzer(
+            det_size=size, det_thresh=low_thresh, ctx_id=ctx_id, root=root
+        )
+        for ratio in (0.0, *DET_PAD_RATIOS):
+            if ratio == 0.0:
+                faces = _run(app_retry, img_bgr)
+                note = f"det_thresh={low_thresh:.2f}"
+            else:
+                padded, px, py = _pad_bgr_for_detection(img_bgr, ratio)
+                faces = _run(app_retry, padded, px, py)
+                note = f"det_thresh={low_thresh:.2f}, {ratio:.0%} pad"
+            if faces:
+                extra = f", det_size={size}" if size != det_size else ""
+                print(f"{log_prefix} face detect: recovered with {note}{extra}.")
+                return faces
+
+    return []
+
+
 def align_one_face(
     image_bhwc: torch.Tensor,
     align_mode: str,
@@ -407,14 +508,14 @@ def align_one_face(
     if image_bhwc.shape[0] > 1:
         image_bhwc = image_bhwc[0:1]
 
-    app = get_face_analyzer(
+    img_bgr = comfy_bhwc_to_bgr_uint8(image_bhwc)
+    faces = _detect_faces_robust(
+        img_bgr,
         det_size=det_size,
         det_thresh=det_thresh,
         ctx_id=ctx_id,
         root=(insightface_root.strip() or None),
     )
-    img_bgr = comfy_bhwc_to_bgr_uint8(image_bhwc)
-    faces = app.get(img_bgr)
     idx = _select_face_index(faces, face_selection, face_index)
     face = faces[idx]
 
