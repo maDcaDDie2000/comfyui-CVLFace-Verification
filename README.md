@@ -217,7 +217,7 @@ Verified against the codebase and upstream model layouts:
 - **ComfyUI conflicts:** Checkpoint import is isolated on `sys.path` and `models` modules from the checkpoint are evicted after load to avoid clashes with other custom nodes (e.g. **comfyui-rmbg** shadowing `models`).
 - **Meta-device / Transformers:** Drop-path init and default-device handling avoid `Tensor.item() cannot be called on meta tensors` during load and forward.
 - **Weight path patch:** Maps upstream `pretrained_model/model.pt` to HF-style `model.safetensors` / other common filenames.
-- **Alignment:** 106- or 68-point landmarks → five ArcFace control points → `insightface.utils.face_align.norm_crop2` at 112×112; keypoints are transformed into crop space for KP-RPE.
+- **Alignment:** 106- or 68-point landmarks → five ArcFace control points → similarity warp at 112×112 with a slight zoom-out / upward shift so tilted frontals keep chin and jaw in frame (InsightFace default template places the mouth very low in the crop).
 - **Scoring:** Embeddings are L2-normalized in `compute_embedding`; compare uses matrix multiply `@` (cosine similarity).
 
 ---

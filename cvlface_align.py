@@ -26,6 +26,22 @@ IDX_106_NOSE_TIP = 57
 IDX_106_MOUTH_LEFT = 76
 IDX_106_MOUTH_RIGHT = 82
 
+# Standard InsightFace / ArcFace five-point template for 112×112 (mouth corners sit near y≈92).
+_ARCFACE_DST_112 = np.array(
+    [
+        [38.2946, 51.6963],
+        [73.5318, 51.5014],
+        [56.0252, 71.7366],
+        [41.5493, 92.3655],
+        [70.7299, 92.2041],
+    ],
+    dtype=np.float32,
+)
+
+# Pull template toward center (zoom out) and shift up so chin/jaw are not clipped on tilted frontals.
+ALIGN_FACE_MARGIN_SCALE = 0.82
+ALIGN_FACE_SHIFT_Y = -4.0
+
 
 def _mean_points(pts: np.ndarray, indices: List[int]) -> np.ndarray:
     sel = pts[np.asarray(indices, dtype=np.int64)]
@@ -333,6 +349,49 @@ def _resolve_align_mode(mode: AlignMode, face) -> Tuple[str, np.ndarray, int]:
     return "2d106", pts5, 106
 
 
+def _arcface_dst_template(
+    image_size: int = 112,
+    margin_scale: float = ALIGN_FACE_MARGIN_SCALE,
+    shift_y: float = ALIGN_FACE_SHIFT_Y,
+) -> np.ndarray:
+    ratio = float(image_size) / 112.0
+    dst = _ARCFACE_DST_112 * ratio
+    if margin_scale != 1.0:
+        cx = cy = (image_size - 1) / 2.0
+        center = np.array([cx, cy], dtype=np.float32)
+        dst = center + (dst - center) * float(margin_scale)
+    if shift_y:
+        dst[:, 1] += float(shift_y) * ratio
+    return dst
+
+
+def norm_crop2_with_chin_margin(
+    img_bgr: np.ndarray,
+    landmark: np.ndarray,
+    image_size: int = 112,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    ArcFace similarity warp with extra margin for chin/jaw (InsightFace default template
+    places the mouth very low in 112×112, which clips tilted frontals).
+    """
+    src = landmark.astype(np.float32).reshape(5, 2)
+    dst = _arcface_dst_template(image_size)
+    M, _ = cv2.estimateAffinePartial2D(src, dst, method=cv2.LMEDS)
+    if M is None:
+        M, _ = cv2.estimateAffinePartial2D(src, dst)
+    if M is None:
+        raise RuntimeError("Failed to estimate face alignment transform.")
+    warped = cv2.warpAffine(
+        img_bgr,
+        M,
+        (image_size, image_size),
+        flags=cv2.INTER_LINEAR,
+        borderMode=cv2.BORDER_CONSTANT,
+        borderValue=(0, 0, 0),
+    )
+    return warped, M
+
+
 def align_one_face(
     image_bhwc: torch.Tensor,
     align_mode: str,
@@ -360,7 +419,7 @@ def align_one_face(
     face = faces[idx]
 
     used_mode, pts5, lmk_n = _resolve_align_mode(align_mode, face)  # type: ignore[arg-type]
-    warped_bgr, m_affine = face_align.norm_crop2(img_bgr, pts5, image_size=112, mode="arcface")
+    warped_bgr, m_affine = norm_crop2_with_chin_margin(img_bgr, pts5, image_size=112)
     kps112 = face_align.trans_points2d(pts5, m_affine)
 
     dense_112 = None
