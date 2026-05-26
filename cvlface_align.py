@@ -111,6 +111,132 @@ def bgr_uint8_to_comfy_bhwc(bgr: np.ndarray) -> torch.Tensor:
     return torch.from_numpy(rgb).unsqueeze(0)
 
 
+def truncate_image_batch(
+    images: torch.Tensor,
+    max_n: int,
+    label: str,
+    log_prefix: str = "[comfyui-CVLFace-Verification]",
+) -> torch.Tensor:
+    """Keep at most ``max_n`` images; warn when truncating."""
+    n = int(images.shape[0])
+    if n > max_n:
+        print(f"{log_prefix} {label}: batch has {n} images; truncating to {max_n}.")
+        return images[:max_n]
+    return images
+
+
+def _draw_grid_cell(
+    canvas: np.ndarray,
+    x0: int,
+    y0: int,
+    w: int,
+    h: int,
+    text: str,
+    bg_bgr: tuple[int, int, int],
+    fg_bgr: tuple[int, int, int] = (24, 24, 24),
+    font_scale: float = 0.45,
+) -> None:
+    canvas[y0 : y0 + h, x0 : x0 + w] = bg_bgr
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    thickness = 1
+    (tw, th), _ = cv2.getTextSize(text, font, font_scale, thickness)
+    tx = x0 + max(2, (w - tw) // 2)
+    ty = y0 + (h + th) // 2
+    cv2.putText(canvas, text, (tx, ty), font, font_scale, fg_bgr, thickness, cv2.LINE_AA)
+
+
+def render_comparison_grids(
+    score_matrix: np.ndarray,
+    column_aggregates: np.ndarray,
+    match_threshold: float,
+    max_cols: int = 10,
+    label_w: int = 52,
+    cell_w: int = 88,
+    cell_h: int = 52,
+) -> torch.Tensor:
+    """
+    Pass/fail grid: rows = references, columns = targets, bottom row = aggregate per target.
+    Emits one IMAGE per panel when there are more than ``max_cols`` targets (max 10×10 cells).
+    """
+    score_matrix = np.asarray(score_matrix, dtype=np.float32)
+    column_aggregates = np.asarray(column_aggregates, dtype=np.float32)
+    r_count, t_count = score_matrix.shape
+    if r_count == 0 or t_count == 0:
+        blank = np.full((cell_h, label_w + cell_w, 3), 255, dtype=np.uint8)
+        return bgr_uint8_to_comfy_bhwc(blank)
+
+    pass_bg = (200, 235, 200)
+    fail_bg = (190, 190, 255)
+    header_bg = (225, 225, 225)
+    label_bg = (215, 215, 215)
+    agg_pass_bg = (130, 220, 130)
+    agg_fail_bg = (130, 130, 235)
+
+    panels: list[torch.Tensor] = []
+    n_panels = (t_count + max_cols - 1) // max_cols
+    for panel_i, col_start in enumerate(range(0, t_count, max_cols)):
+        col_end = min(col_start + max_cols, t_count)
+        n_cols = col_end - col_start
+        n_rows_total = 1 + r_count + 1
+        grid_h = n_rows_total * cell_h
+        grid_w = label_w + n_cols * cell_w
+        canvas = np.full((grid_h, grid_w, 3), 255, dtype=np.uint8)
+
+        corner = "R/T" if n_panels == 1 else f"P{panel_i + 1}"
+        _draw_grid_cell(canvas, 0, 0, label_w, cell_h, corner, label_bg, (40, 40, 40), 0.4)
+
+        for c in range(n_cols):
+            t_idx = col_start + c
+            _draw_grid_cell(
+                canvas,
+                label_w + c * cell_w,
+                0,
+                cell_w,
+                cell_h,
+                f"T{t_idx}",
+                header_bg,
+            )
+
+        for r in range(r_count):
+            row_y = (1 + r) * cell_h
+            _draw_grid_cell(canvas, 0, row_y, label_w, cell_h, f"R{r}", label_bg)
+            for c in range(n_cols):
+                t_idx = col_start + c
+                score = float(score_matrix[r, t_idx])
+                ok = score >= match_threshold
+                _draw_grid_cell(
+                    canvas,
+                    label_w + c * cell_w,
+                    row_y,
+                    cell_w,
+                    cell_h,
+                    f"{score:.2f}",
+                    pass_bg if ok else fail_bg,
+                )
+
+        agg_y = (1 + r_count) * cell_h
+        _draw_grid_cell(canvas, 0, agg_y, label_w, cell_h, "AGG", label_bg, (20, 20, 20), 0.42)
+        for c in range(n_cols):
+            t_idx = col_start + c
+            agg = float(column_aggregates[t_idx])
+            ok = agg >= match_threshold
+            _draw_grid_cell(
+                canvas,
+                label_w + c * cell_w,
+                agg_y,
+                cell_w,
+                cell_h,
+                f"{agg:.2f}",
+                agg_pass_bg if ok else agg_fail_bg,
+                (10, 10, 10),
+                0.48,
+            )
+
+        panels.append(bgr_uint8_to_comfy_bhwc(canvas))
+
+    return torch.cat(panels, dim=0) if len(panels) > 1 else panels[0]
+
+
 def _select_face_index(faces, policy: str, face_index: int) -> int:
     if not faces:
         raise RuntimeError("No face detected.")

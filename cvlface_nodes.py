@@ -11,7 +11,13 @@ from typing import Optional
 import numpy as np
 import torch
 
-from cvlface_align import align_one_face, draw_landmarks_on_crop, render_compare_debug_preview
+from cvlface_align import (
+    align_one_face,
+    draw_landmarks_on_crop,
+    render_compare_debug_preview,
+    render_comparison_grids,
+    truncate_image_batch,
+)
 from cvlface_embed import compute_embedding, get_cached_embedder
 from cvlface_hash import digest_any, tensor_digest
 from cvlface_paths import (
@@ -21,6 +27,10 @@ from cvlface_paths import (
     cvlface_checkpoint_dir,
 )
 from cvlface_types import FaceEmbedderHandle, FaceProfile
+
+LOG_PREFIX = "[comfyui-CVLFace-Verification]"
+MAX_REF_IMAGES = 10
+MAX_TARGET_IMAGES = 50
 
 
 def _aggregate_scores(scores: np.ndarray, qualities: np.ndarray, how: str) -> float:
@@ -37,8 +47,7 @@ def _aggregate_scores(scores: np.ndarray, qualities: np.ndarray, how: str) -> fl
 
 
 def _build_profile_tensor(
-    ref_image: torch.Tensor,
-    extra_ref_images: Optional[torch.Tensor],
+    ref_images: torch.Tensor,
     embedder: FaceEmbedderHandle,
     align_mode: str,
     face_selection: str,
@@ -47,14 +56,13 @@ def _build_profile_tensor(
     det_thresh: float,
     ctx_id: int,
 ) -> FaceProfile:
+    ref_images = truncate_image_batch(ref_images, MAX_REF_IMAGES, "ref_image", LOG_PREFIX)
     embs = []
     quals = []
 
-    def one(img: torch.Tensor):
-        if img.shape[0] > 1:
-            img = img[0:1]
+    for i in range(ref_images.shape[0]):
         bundle = align_one_face(
-            img,
+            ref_images[i : i + 1],
             align_mode=align_mode,
             face_selection=face_selection,
             face_index=face_index,
@@ -65,11 +73,6 @@ def _build_profile_tensor(
         e = compute_embedding(embedder, bundle.image_bhwc, bundle.keypoints_112)
         embs.append(e[0])
         quals.append(bundle.meta.det_score)
-
-    one(ref_image)
-    if extra_ref_images is not None and extra_ref_images.shape[0] > 0:
-        for i in range(extra_ref_images.shape[0]):
-            one(extra_ref_images[i : i + 1])
 
     E = np.stack(embs, axis=0)
     Q = np.asarray(quals, dtype=np.float32)
@@ -196,9 +199,6 @@ class FaceReferenceProfile:
                 "det_size": ("INT", {"default": 640, "min": 320, "max": 1280, "step": 64}),
                 "insightface_ctx": (["cuda", "cpu"], {"default": "cuda"}),
             },
-            "optional": {
-                "extra_ref_images": ("IMAGE",),
-            },
         }
 
     RETURN_TYPES = ("FACE_PROFILE",)
@@ -216,16 +216,16 @@ class FaceReferenceProfile:
         det_thresh: float,
         det_size: int,
         insightface_ctx: str,
-        extra_ref_images: Optional[torch.Tensor] = None,
     ):
         if face_embedder is None:
             raise RuntimeError(
                 "Face Reference Profile: connect the output of **CVLFace Loader** (face_embedder)."
             )
+        if ref_image.shape[0] < 1:
+            raise RuntimeError("Face Reference Profile: ref_image batch must contain at least 1 image.")
         ctx_id = 0 if insightface_ctx == "cuda" else -1
         prof = _build_profile_tensor(
             ref_image,
-            extra_ref_images,
             face_embedder,
             align_mode,
             face_selection,
@@ -247,14 +247,11 @@ class FaceReferenceProfile:
         det_thresh: float,
         det_size: int,
         insightface_ctx: str,
-        extra_ref_images: Optional[torch.Tensor] = None,
     ):
-        ex = tensor_digest(extra_ref_images) if extra_ref_images is not None else "noextra"
         if face_embedder is None:
             return digest_any(
                 "no_embedder",
                 tensor_digest(ref_image),
-                ex,
                 align_mode,
                 face_selection,
                 face_index,
@@ -266,7 +263,6 @@ class FaceReferenceProfile:
             face_embedder.model_path,
             str(face_embedder.device),
             tensor_digest(ref_image),
-            ex,
             align_mode,
             face_selection,
             face_index,
@@ -276,13 +272,12 @@ class FaceReferenceProfile:
         )
 
 
-def _passed_input_image(target_image: torch.Tensor, match: int) -> torch.Tensor:
-    """Full input image (same frame that was compared) when match passes; empty batch otherwise."""
-    src = target_image[0:1] if target_image.shape[0] > 1 else target_image
-    if match:
-        return src
-    _, h, w, c = src.shape
-    return torch.zeros((0, h, w, c), dtype=src.dtype, device=src.device)
+def _passed_input_images(targets: torch.Tensor, matches: list[int]) -> torch.Tensor:
+    """Full input images for targets that passed the threshold."""
+    idx = [i for i, m in enumerate(matches) if m]
+    if not idx:
+        return torch.zeros((0, *targets.shape[1:]), dtype=targets.dtype, device=targets.device)
+    return targets[idx]
 
 
 class FaceCompareKPRPE:
@@ -304,15 +299,16 @@ class FaceCompareKPRPE:
             },
         }
 
-    RETURN_TYPES = ("IMAGE", "IMAGE", "STRING", "FLOAT", "INT", "IMAGE", "IMAGE")
+    RETURN_TYPES = ("IMAGE", "IMAGE", "STRING", "STRING", "STRING", "IMAGE", "IMAGE", "IMAGE")
     RETURN_NAMES = (
-        "aligned_face",
-        "landmarks_preview",
-        "per_ref_scores_json",
-        "aggregate_score",
-        "match",
-        "debug_preview",
-        "passed_image",
+        "passed_images",
+        "comparison_grids",
+        "matches",
+        "aggregate_scores",
+        "scores_json",
+        "debug_previews",
+        "aligned_faces",
+        "landmarks_previews",
     )
     FUNCTION = "compare"
     CATEGORY = CVLF_NODE_MENU_CATEGORY
@@ -339,51 +335,86 @@ class FaceCompareKPRPE:
             raise RuntimeError(
                 "Face Compare KP-RPE: connect **Face Reference Profile** → face_profile."
             )
+        if target_image.shape[0] < 1:
+            raise RuntimeError("Face Compare KP-RPE: target_image batch must contain at least 1 image.")
 
+        targets = truncate_image_batch(target_image, MAX_TARGET_IMAGES, "target_image", LOG_PREFIX)
         ctx_id = 0 if insightface_ctx == "cuda" else -1
-        bundle = align_one_face(
-            target_image,
-            align_mode=align_mode,
-            face_selection=face_selection,
-            face_index=face_index,
-            det_size=det_size,
-            det_thresh=det_thresh,
-            ctx_id=ctx_id,
-        )
-        q_emb = compute_embedding(face_embedder, bundle.image_bhwc, bundle.keypoints_112)[0]
-        refs = face_profile.embeddings
-        scores = (refs @ q_emb).astype(np.float32)
-        agg = _aggregate_scores(scores, face_profile.qualities, aggregate)
-        match = 1 if float(agg) >= float(match_threshold) else 0
-        prev = draw_landmarks_on_crop(
-            bundle.image_bhwc,
-            bundle.keypoints_112,
-            bundle.dense_landmarks_112,
-        )
 
-        dbg = render_compare_debug_preview(
-            bundle.image_bhwc,
-            match=match,
-            aggregate_score=float(agg),
-            aggregate_mode=aggregate,
+        aligned_list = []
+        preview_list = []
+        debug_list = []
+        q_embs = []
+
+        for t in range(targets.shape[0]):
+            bundle = align_one_face(
+                targets[t : t + 1],
+                align_mode=align_mode,
+                face_selection=face_selection,
+                face_index=face_index,
+                det_size=det_size,
+                det_thresh=det_thresh,
+                ctx_id=ctx_id,
+            )
+            q_embs.append(compute_embedding(face_embedder, bundle.image_bhwc, bundle.keypoints_112)[0])
+            aligned_list.append(bundle.image_bhwc)
+            preview_list.append(
+                draw_landmarks_on_crop(
+                    bundle.image_bhwc,
+                    bundle.keypoints_112,
+                    bundle.dense_landmarks_112,
+                )
+            )
+
+        refs = face_profile.embeddings
+        q_matrix = np.stack(q_embs, axis=0)
+        score_matrix = (refs @ q_matrix.T).astype(np.float32)
+
+        per_target_agg: list[float] = []
+        per_target_match: list[int] = []
+        for t in range(score_matrix.shape[1]):
+            col = score_matrix[:, t]
+            agg = _aggregate_scores(col, face_profile.qualities, aggregate)
+            per_target_agg.append(float(agg))
+            per_target_match.append(1 if agg >= float(match_threshold) else 0)
+
+        for t, agg in enumerate(per_target_agg):
+            debug_list.append(
+                render_compare_debug_preview(
+                    aligned_list[t],
+                    match=per_target_match[t],
+                    aggregate_score=agg,
+                    aggregate_mode=aggregate,
+                    match_threshold=float(match_threshold),
+                )
+            )
+
+        column_aggregates = np.asarray(per_target_agg, dtype=np.float32)
+        comparison_grids = render_comparison_grids(
+            score_matrix,
+            column_aggregates,
             match_threshold=float(match_threshold),
         )
 
         payload = {
-            "cosine_similarity": [float(x) for x in scores.tolist()],
-            "aggregate": float(agg),
+            "score_matrix": score_matrix.tolist(),
+            "num_references": int(score_matrix.shape[0]),
+            "num_targets": int(score_matrix.shape[1]),
+            "aggregate_per_target": per_target_agg,
             "aggregate_mode": aggregate,
             "match_threshold": float(match_threshold),
-            "match": bool(match),
+            "matches": [bool(m) for m in per_target_match],
         }
+
         return (
-            bundle.image_bhwc,
-            prev,
+            _passed_input_images(targets, per_target_match),
+            comparison_grids,
+            json.dumps(per_target_match),
+            json.dumps(per_target_agg),
             json.dumps(payload, indent=2),
-            float(agg),
-            int(match),
-            dbg,
-            _passed_input_image(target_image, match),
+            torch.cat(debug_list, dim=0),
+            torch.cat(aligned_list, dim=0),
+            torch.cat(preview_list, dim=0),
         )
 
     @classmethod

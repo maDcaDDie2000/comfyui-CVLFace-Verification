@@ -164,21 +164,21 @@ Builds a reference profile from aligned + embedded reference image(s).
 
 | | |
 |---|---|
-| **Inputs** | `face_embedder` (from Loader); `ref_image` (`IMAGE`); same alignment params as Face Align; optional `extra_ref_images` (`IMAGE` batch) |
+| **Inputs** | `face_embedder` (from Loader); `ref_image` (`IMAGE` batch, min 1, max 10 — truncated with console warning); same alignment params as Face Align |
 | **Outputs** | `face_profile` (`FACE_PROFILE`) |
 
-Each reference image is aligned, embedded, and L2-normalized. Multiple references produce multiple rows in the profile matrix.
+Each reference image is aligned, embedded, and L2-normalized. Multiple references produce multiple rows in the profile matrix (up to 10).
 
 #### Face Compare KP-RPE — `FaceCompareKPRPE`
 
-Compares a target face against a reference profile.
+Compares target image batch against a reference profile (all ref × target pairs).
 
 | | |
 |---|---|
-| **Inputs** | `face_embedder`, `face_profile`, `target_image`; alignment params; `aggregate` (`max` \| `mean` \| `quality_weighted_mean`); `match_threshold` (default `0.35`, cosine similarity on normalized embeddings) |
-| **Outputs** | `aligned_face`, `landmarks_preview`, `per_ref_scores_json`, `aggregate_score`, `match` (`1` = pass), `debug_preview`, `passed_image` (full `target_image` passthrough when score ≥ threshold; otherwise empty batch) |
+| **Inputs** | `face_embedder`, `face_profile`, `target_image` (`IMAGE` batch, min 1, max 50 — truncated with console warning); alignment params; `aggregate` (`max` \| `mean` \| `quality_weighted_mean`); `match_threshold` (default `0.35`) |
+| **Outputs** | `passed_images`, `comparison_grids`, `matches` (JSON array per target), `aggregate_scores` (JSON array per target), `scores_json`, `debug_previews`, `aligned_faces`, `landmarks_previews` |
 
-Scores are dot products of L2-normalized embeddings (equivalent to cosine similarity). `match` is `1` when `aggregate_score >= match_threshold`. **`passed_image`** returns the **full input `target_image`** (same resolution, 1:1 passthrough) when the threshold is met, or an **empty image batch** when it is not — wire it to **Save Image** to keep only verified inputs.
+**Batch behaviour:** For `R` references and `T` targets, `scores_json` contains an `R×T` cosine-similarity matrix. Per-target aggregate uses the selected `aggregate` mode across references. **`passed_images`** returns only full input targets whose aggregate ≥ threshold (empty batch if none pass). **`comparison_grids`** draws green/red cells for each ref–target score, an **AGG** row per target column, and splits into multiple 10-column panels when `T > 10`.
 
 ### Typical workflow
 
