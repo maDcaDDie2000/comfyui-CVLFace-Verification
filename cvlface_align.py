@@ -15,6 +15,9 @@ from cvlface_types import AlignedFaceBundle, FaceMeta
 
 AlignMode = Literal["2d106", "3d68", "auto"]
 
+# Sentinel cosine score when detection/alignment fails (always below any real threshold).
+NO_FACE_SCORE = -1.0
+
 # InsightFace coarse 106 layout (2d106det): derive five ArcFace-style control points.
 # Nose / mouth indices follow common JD-106 diagrams; tune IDX_* if your pipeline drifts.
 IDX_106_LEFT_EYE = list(range(33, 43))
@@ -145,6 +148,25 @@ def _draw_grid_cell(
     cv2.putText(canvas, text, (tx, ty), font, font_scale, fg_bgr, thickness, cv2.LINE_AA)
 
 
+def render_no_pass_placeholder() -> torch.Tensor:
+    """Single-frame placeholder when no targets pass (Save Image / PreviewImage need batch ≥ 1)."""
+    w, h = 480, 96
+    canvas = np.full((h, w, 3), 36, dtype=np.uint8)
+    _draw_grid_cell(canvas, 0, 0, w, h, "NO TARGETS PASSED THRESHOLD", (36, 36, 36), (210, 210, 210), 0.65)
+    return bgr_uint8_to_comfy_bhwc(canvas)
+
+
+def _is_no_face_score(score: float) -> bool:
+    return float(score) <= NO_FACE_SCORE + 1e-5
+
+
+def _format_grid_score(score: float, match_threshold: float) -> tuple[str, bool]:
+    if _is_no_face_score(score):
+        return "N/F", False
+    ok = float(score) >= float(match_threshold)
+    return f"{score:.2f}", ok
+
+
 def render_comparison_grids(
     score_matrix: np.ndarray,
     column_aggregates: np.ndarray,
@@ -203,14 +225,14 @@ def render_comparison_grids(
             for c in range(n_cols):
                 t_idx = col_start + c
                 score = float(score_matrix[r, t_idx])
-                ok = score >= match_threshold
+                label, ok = _format_grid_score(score, match_threshold)
                 _draw_grid_cell(
                     canvas,
                     label_w + c * cell_w,
                     row_y,
                     cell_w,
                     cell_h,
-                    f"{score:.2f}",
+                    label,
                     pass_bg if ok else fail_bg,
                 )
 
@@ -219,14 +241,14 @@ def render_comparison_grids(
         for c in range(n_cols):
             t_idx = col_start + c
             agg = float(column_aggregates[t_idx])
-            ok = agg >= match_threshold
+            label, ok = _format_grid_score(agg, match_threshold)
             _draw_grid_cell(
                 canvas,
                 label_w + c * cell_w,
                 agg_y,
                 cell_w,
                 cell_h,
-                f"{agg:.2f}",
+                label,
                 agg_pass_bg if ok else agg_fail_bg,
                 (10, 10, 10),
                 0.48,
@@ -346,6 +368,47 @@ def align_one_face(
     )
 
 
+def try_align_one_face(
+    image_bhwc: torch.Tensor,
+    align_mode: str,
+    face_selection: str,
+    face_index: int,
+    det_size: int,
+    det_thresh: float,
+    ctx_id: int,
+    insightface_root: str = "",
+) -> Optional[AlignedFaceBundle]:
+    """Like ``align_one_face`` but returns ``None`` when no face can be detected/aligned."""
+    try:
+        return align_one_face(
+            image_bhwc,
+            align_mode=align_mode,
+            face_selection=face_selection,
+            face_index=face_index,
+            det_size=det_size,
+            det_thresh=det_thresh,
+            ctx_id=ctx_id,
+            insightface_root=insightface_root,
+        )
+    except RuntimeError as exc:
+        msg = str(exc)
+        if (
+            "No face detected" in msg
+            or "face_index" in msg
+            or "landmark" in msg.lower()
+            or "keypoints" in msg.lower()
+        ):
+            return None
+        raise
+
+
+def render_no_face_aligned_placeholder() -> torch.Tensor:
+    """112×112 aligned-crop placeholder when detection fails."""
+    canvas = np.full((112, 112, 3), 42, dtype=np.uint8)
+    _draw_grid_cell(canvas, 0, 0, 112, 112, "NO FACE", (42, 42, 42), (200, 200, 200), 0.45)
+    return bgr_uint8_to_comfy_bhwc(canvas)
+
+
 def render_compare_debug_preview(
     crop_bhwc: torch.Tensor,
     *,
@@ -369,9 +432,10 @@ def render_compare_debug_preview(
 
     status = "MATCH" if match else "NO MATCH"
     status_color = (80, 220, 80) if match else (80, 80, 255)
+    score_txt = "N/F" if _is_no_face_score(aggregate_score) else f"{aggregate_score:.3f}"
     lines = [
         (status, status_color, 0.85, 2),
-        (f"score {aggregate_score:.3f}   threshold {match_threshold:.2f}", (240, 240, 240), 0.55, 1),
+        (f"score {score_txt}   threshold {match_threshold:.2f}", (240, 240, 240), 0.55, 1),
         (f"aggregate: {aggregate_mode}", (200, 200, 200), 0.5, 1),
     ]
 

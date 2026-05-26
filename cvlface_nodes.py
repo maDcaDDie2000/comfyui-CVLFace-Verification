@@ -12,11 +12,15 @@ import numpy as np
 import torch
 
 from cvlface_align import (
+    NO_FACE_SCORE,
     align_one_face,
     draw_landmarks_on_crop,
     render_compare_debug_preview,
     render_comparison_grids,
+    render_no_face_aligned_placeholder,
+    render_no_pass_placeholder,
     truncate_image_batch,
+    try_align_one_face,
 )
 from cvlface_embed import compute_embedding, get_cached_embedder
 from cvlface_hash import digest_any, tensor_digest
@@ -35,7 +39,9 @@ MAX_TARGET_IMAGES = 50
 
 def _aggregate_scores(scores: np.ndarray, qualities: np.ndarray, how: str) -> float:
     if scores.size == 0:
-        return 0.0
+        return NO_FACE_SCORE
+    if np.all(scores <= NO_FACE_SCORE + 1e-5):
+        return NO_FACE_SCORE
     if how == "max":
         return float(scores.max())
     if how == "mean":
@@ -59,9 +65,10 @@ def _build_profile_tensor(
     ref_images = truncate_image_batch(ref_images, MAX_REF_IMAGES, "ref_image", LOG_PREFIX)
     embs = []
     quals = []
+    skipped: list[int] = []
 
     for i in range(ref_images.shape[0]):
-        bundle = align_one_face(
+        bundle = try_align_one_face(
             ref_images[i : i + 1],
             align_mode=align_mode,
             face_selection=face_selection,
@@ -70,9 +77,22 @@ def _build_profile_tensor(
             det_thresh=det_thresh,
             ctx_id=ctx_id,
         )
+        if bundle is None:
+            skipped.append(i)
+            print(
+                f"{LOG_PREFIX} ref_image[{i}]: no face detected; skipping "
+                f"(try lower det_thresh or larger det_size)."
+            )
+            continue
         e = compute_embedding(embedder, bundle.image_bhwc, bundle.keypoints_112)
         embs.append(e[0])
         quals.append(bundle.meta.det_score)
+
+    if not embs:
+        raise RuntimeError(
+            "Face Reference Profile: no face detected in any reference image. "
+            "Lower det_thresh, increase det_size, or check that ref_image batch contains visible faces."
+        )
 
     E = np.stack(embs, axis=0)
     Q = np.asarray(quals, dtype=np.float32)
@@ -81,7 +101,7 @@ def _build_profile_tensor(
         qualities=Q,
         model_path=embedder.model_path,
         align_mode=align_mode,
-        extras={},
+        extras={"skipped_ref_indices": skipped},
     )
 
 
@@ -275,9 +295,14 @@ class FaceReferenceProfile:
 def _passed_input_images(targets: torch.Tensor, matches: list[int]) -> torch.Tensor:
     """Full input images for targets that passed the threshold."""
     idx = [i for i, m in enumerate(matches) if m]
-    if not idx:
-        return torch.zeros((0, *targets.shape[1:]), dtype=targets.dtype, device=targets.device)
-    return targets[idx]
+    if idx:
+        return targets[idx]
+    print(
+        f"{LOG_PREFIX} passed_images: no targets passed threshold; "
+        "emitting placeholder frame (downstream Save/Preview nodes require batch ≥ 1)."
+    )
+    ph = render_no_pass_placeholder()
+    return ph.to(device=targets.device, dtype=targets.dtype)
 
 
 class FaceCompareKPRPE:
@@ -344,10 +369,11 @@ class FaceCompareKPRPE:
         aligned_list = []
         preview_list = []
         debug_list = []
-        q_embs = []
+        q_embs: list[Optional[np.ndarray]] = []
+        no_face_targets: list[int] = []
 
         for t in range(targets.shape[0]):
-            bundle = align_one_face(
+            bundle = try_align_one_face(
                 targets[t : t + 1],
                 align_mode=align_mode,
                 face_selection=face_selection,
@@ -356,6 +382,20 @@ class FaceCompareKPRPE:
                 det_thresh=det_thresh,
                 ctx_id=ctx_id,
             )
+            if bundle is None:
+                no_face_targets.append(t)
+                print(
+                    f"{LOG_PREFIX} target_image[{t}]: no face detected; "
+                    f"scores set to N/F ({NO_FACE_SCORE})."
+                )
+                ph = render_no_face_aligned_placeholder().to(
+                    device=targets.device, dtype=targets.dtype
+                )
+                aligned_list.append(ph)
+                preview_list.append(ph)
+                q_embs.append(None)
+                continue
+
             q_embs.append(compute_embedding(face_embedder, bundle.image_bhwc, bundle.keypoints_112)[0])
             aligned_list.append(bundle.image_bhwc)
             preview_list.append(
@@ -367,16 +407,24 @@ class FaceCompareKPRPE:
             )
 
         refs = face_profile.embeddings
-        q_matrix = np.stack(q_embs, axis=0)
-        score_matrix = (refs @ q_matrix.T).astype(np.float32)
+        t_count = targets.shape[0]
+        r_count = refs.shape[0]
+        score_matrix = np.full((r_count, t_count), NO_FACE_SCORE, dtype=np.float32)
+        for t, emb in enumerate(q_embs):
+            if emb is not None:
+                score_matrix[:, t] = refs @ emb
 
         per_target_agg: list[float] = []
         per_target_match: list[int] = []
-        for t in range(score_matrix.shape[1]):
+        for t in range(t_count):
             col = score_matrix[:, t]
             agg = _aggregate_scores(col, face_profile.qualities, aggregate)
             per_target_agg.append(float(agg))
-            per_target_match.append(1 if agg >= float(match_threshold) else 0)
+            per_target_match.append(
+                0
+                if float(agg) <= NO_FACE_SCORE + 1e-5
+                else (1 if agg >= float(match_threshold) else 0)
+            )
 
         for t, agg in enumerate(per_target_agg):
             debug_list.append(
@@ -398,12 +446,15 @@ class FaceCompareKPRPE:
 
         payload = {
             "score_matrix": score_matrix.tolist(),
-            "num_references": int(score_matrix.shape[0]),
-            "num_targets": int(score_matrix.shape[1]),
+            "num_references": int(r_count),
+            "num_targets": int(t_count),
+            "no_face_target_indices": no_face_targets,
+            "skipped_ref_indices": list(face_profile.extras.get("skipped_ref_indices", [])),
             "aggregate_per_target": per_target_agg,
             "aggregate_mode": aggregate,
             "match_threshold": float(match_threshold),
             "matches": [bool(m) for m in per_target_match],
+            "no_face_score": NO_FACE_SCORE,
         }
 
         return (

@@ -178,7 +178,7 @@ Compares target image batch against a reference profile (all ref × target pairs
 | **Inputs** | `face_embedder`, `face_profile`, `target_image` (`IMAGE` batch, min 1, max 50 — truncated with console warning); alignment params; `aggregate` (`max` \| `mean` \| `quality_weighted_mean`); `match_threshold` (default `0.35`) |
 | **Outputs** | `passed_images`, `comparison_grids`, `matches` (JSON array per target), `aggregate_scores` (JSON array per target), `scores_json`, `debug_previews`, `aligned_faces`, `landmarks_previews` |
 
-**Batch behaviour:** For `R` references and `T` targets, `scores_json` contains an `R×T` cosine-similarity matrix. Per-target aggregate uses the selected `aggregate` mode across references. **`passed_images`** returns only full input targets whose aggregate ≥ threshold (empty batch if none pass). **`comparison_grids`** draws green/red cells for each ref–target score, an **AGG** row per target column, and splits into multiple 10-column panels when `T > 10`.
+**Batch behaviour:** For `R` references and `T` targets, `scores_json` contains an `R×T` cosine-similarity matrix. Per-target aggregate uses the selected `aggregate` mode across references. **`passed_images`** returns full-resolution targets whose aggregate ≥ threshold. If none pass, a single labeled placeholder frame is returned so **Save Image** / **Preview Image** do not crash on an empty batch.
 
 ### Typical workflow
 
