@@ -52,6 +52,30 @@ def _aggregate_scores(scores: np.ndarray, qualities: np.ndarray, how: str) -> fl
     raise ValueError(how)
 
 
+def _aggregate_target_column(
+    score_matrix: np.ndarray,
+    target_index: int,
+    valid_ref_indices: list[int],
+    qualities: np.ndarray,
+    how: str,
+) -> float:
+    """Aggregate only valid reference rows (excludes skipped refs and N/F targets)."""
+    scores: list[float] = []
+    quals: list[float] = []
+    for emb_i, orig_i in enumerate(valid_ref_indices):
+        s = float(score_matrix[orig_i, target_index])
+        if s > NO_FACE_SCORE + 1e-5:
+            scores.append(s)
+            quals.append(float(qualities[emb_i]))
+    if not scores:
+        return NO_FACE_SCORE
+    return _aggregate_scores(
+        np.asarray(scores, dtype=np.float32),
+        np.asarray(quals, dtype=np.float32),
+        how,
+    )
+
+
 def _build_profile_tensor(
     ref_images: torch.Tensor,
     embedder: FaceEmbedderHandle,
@@ -63,11 +87,13 @@ def _build_profile_tensor(
     ctx_id: int,
 ) -> FaceProfile:
     ref_images = truncate_image_batch(ref_images, MAX_REF_IMAGES, "ref_image", LOG_PREFIX)
+    ref_count = int(ref_images.shape[0])
     embs = []
     quals = []
     skipped: list[int] = []
+    valid_ref_indices: list[int] = []
 
-    for i in range(ref_images.shape[0]):
+    for i in range(ref_count):
         bundle = try_align_one_face(
             ref_images[i : i + 1],
             align_mode=align_mode,
@@ -80,10 +106,13 @@ def _build_profile_tensor(
         if bundle is None:
             skipped.append(i)
             print(
-                f"{LOG_PREFIX} ref_image[{i}]: no face detected; skipping "
-                f"(try lower det_thresh or larger det_size)."
+                f"{LOG_PREFIX} ref_image #{i + 1}/{ref_count}: no face detected; "
+                f"grid row R{i + 1} will show N/F. "
+                f"For frontal faces with head tilt, try lower det_thresh, larger det_size, "
+                f"or face_selection=largest_area."
             )
             continue
+        valid_ref_indices.append(i)
         e = compute_embedding(embedder, bundle.image_bhwc, bundle.keypoints_112)
         embs.append(e[0])
         quals.append(bundle.meta.det_score)
@@ -91,7 +120,15 @@ def _build_profile_tensor(
     if not embs:
         raise RuntimeError(
             "Face Reference Profile: no face detected in any reference image. "
-            "Lower det_thresh, increase det_size, or check that ref_image batch contains visible faces."
+            "Lower det_thresh, increase det_size, or check that ref_image batch shows frontal faces "
+            "with the head fully visible (including when the head is tilted sideways)."
+        )
+
+    if skipped:
+        skipped_1 = ", ".join(str(i + 1) for i in skipped)
+        print(
+            f"{LOG_PREFIX} Face Reference Profile summary: {len(valid_ref_indices)}/{ref_count} references "
+            f"embedded; no face on ref # {skipped_1} (grid rows marked N/F)."
         )
 
     E = np.stack(embs, axis=0)
@@ -101,7 +138,11 @@ def _build_profile_tensor(
         qualities=Q,
         model_path=embedder.model_path,
         align_mode=align_mode,
-        extras={"skipped_ref_indices": skipped},
+        extras={
+            "ref_count": ref_count,
+            "valid_ref_indices": valid_ref_indices,
+            "skipped_ref_indices": skipped,
+        },
     )
 
 
@@ -142,7 +183,7 @@ class FaceAlign:
         return {
             "required": {
                 "image": ("IMAGE",),
-                "align_mode": (["2d106", "3d68", "auto"], {"default": "2d106"}),
+                "align_mode": (["3d68", "2d106", "auto"], {"default": "3d68"}),
                 "face_selection": (["largest_area", "highest_score", "index"], {"default": "largest_area"}),
                 "face_index": ("INT", {"default": 0, "min": 0, "max": 63, "step": 1}),
                 "det_thresh": ("FLOAT", {"default": 0.5, "min": 0.05, "max": 0.99, "step": 0.01}),
@@ -212,7 +253,7 @@ class FaceReferenceProfile:
             "required": {
                 "face_embedder": ("FACE_EMBEDDER",),
                 "ref_image": ("IMAGE",),
-                "align_mode": (["2d106", "3d68", "auto"], {"default": "2d106"}),
+                "align_mode": (["3d68", "2d106", "auto"], {"default": "3d68"}),
                 "face_selection": (["largest_area", "highest_score", "index"], {"default": "largest_area"}),
                 "face_index": ("INT", {"default": 0, "min": 0, "max": 63, "step": 1}),
                 "det_thresh": ("FLOAT", {"default": 0.5, "min": 0.05, "max": 0.99, "step": 0.01}),
@@ -313,7 +354,7 @@ class FaceCompareKPRPE:
                 "face_embedder": ("FACE_EMBEDDER",),
                 "face_profile": ("FACE_PROFILE",),
                 "target_image": ("IMAGE",),
-                "align_mode": (["2d106", "3d68", "auto"], {"default": "2d106"}),
+                "align_mode": (["3d68", "2d106", "auto"], {"default": "3d68"}),
                 "aggregate": (["max", "mean", "quality_weighted_mean"], {"default": "mean"}),
                 "match_threshold": ("FLOAT", {"default": 0.35, "min": -1.0, "max": 1.0, "step": 0.01}),
                 "face_selection": (["largest_area", "highest_score", "index"], {"default": "largest_area"}),
@@ -385,8 +426,10 @@ class FaceCompareKPRPE:
             if bundle is None:
                 no_face_targets.append(t)
                 print(
-                    f"{LOG_PREFIX} target_image[{t}]: no face detected; "
-                    f"scores set to N/F ({NO_FACE_SCORE})."
+                    f"{LOG_PREFIX} target_image #{t + 1}/{targets.shape[0]}: no face detected; "
+                    f"grid column T{t + 1} will show N/F. "
+                    f"For frontal faces with head tilt, try lower det_thresh, larger det_size, "
+                f"or face_selection=largest_area."
                 )
                 ph = render_no_face_aligned_placeholder().to(
                     device=targets.device, dtype=targets.dtype
@@ -408,17 +451,24 @@ class FaceCompareKPRPE:
 
         refs = face_profile.embeddings
         t_count = targets.shape[0]
-        r_count = refs.shape[0]
-        score_matrix = np.full((r_count, t_count), NO_FACE_SCORE, dtype=np.float32)
-        for t, emb in enumerate(q_embs):
-            if emb is not None:
-                score_matrix[:, t] = refs @ emb
+        ref_count = int(face_profile.extras.get("ref_count", refs.shape[0]))
+        valid_ref_indices = list(
+            face_profile.extras.get("valid_ref_indices", list(range(refs.shape[0])))
+        )
+        skipped_ref_indices = list(face_profile.extras.get("skipped_ref_indices", []))
+
+        score_matrix = np.full((ref_count, t_count), NO_FACE_SCORE, dtype=np.float32)
+        for emb_i, orig_i in enumerate(valid_ref_indices):
+            for t, emb in enumerate(q_embs):
+                if emb is not None:
+                    score_matrix[orig_i, t] = refs[emb_i] @ emb
 
         per_target_agg: list[float] = []
         per_target_match: list[int] = []
         for t in range(t_count):
-            col = score_matrix[:, t]
-            agg = _aggregate_scores(col, face_profile.qualities, aggregate)
+            agg = _aggregate_target_column(
+                score_matrix, t, valid_ref_indices, face_profile.qualities, aggregate
+            )
             per_target_agg.append(float(agg))
             per_target_match.append(
                 0
@@ -442,14 +492,21 @@ class FaceCompareKPRPE:
             score_matrix,
             column_aggregates,
             match_threshold=float(match_threshold),
+            skipped_ref_indices=skipped_ref_indices,
+            no_face_target_indices=no_face_targets,
         )
 
         payload = {
             "score_matrix": score_matrix.tolist(),
-            "num_references": int(r_count),
+            "num_references": int(ref_count),
+            "num_references_embedded": int(len(valid_ref_indices)),
             "num_targets": int(t_count),
             "no_face_target_indices": no_face_targets,
-            "skipped_ref_indices": list(face_profile.extras.get("skipped_ref_indices", [])),
+            "no_face_target_numbers": [i + 1 for i in no_face_targets],
+            "skipped_ref_indices": skipped_ref_indices,
+            "skipped_ref_numbers": [i + 1 for i in skipped_ref_indices],
+            "valid_ref_indices": valid_ref_indices,
+            "valid_ref_numbers": [i + 1 for i in valid_ref_indices],
             "aggregate_per_target": per_target_agg,
             "aggregate_mode": aggregate,
             "match_threshold": float(match_threshold),

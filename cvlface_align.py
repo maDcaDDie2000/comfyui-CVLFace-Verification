@@ -172,17 +172,21 @@ def render_comparison_grids(
     column_aggregates: np.ndarray,
     match_threshold: float,
     max_cols: int = 10,
-    label_w: int = 52,
+    label_w: int = 60,
     cell_w: int = 88,
     cell_h: int = 52,
+    skipped_ref_indices: Optional[list[int]] = None,
+    no_face_target_indices: Optional[list[int]] = None,
 ) -> torch.Tensor:
     """
-    Pass/fail grid: rows = references, columns = targets, bottom row = aggregate per target.
-    Emits one IMAGE per panel when there are more than ``max_cols`` targets (max 10×10 cells).
+    Pass/fail grid: rows = references (1-based labels), columns = targets (1-based labels).
+    Skipped refs and no-face targets are still shown as rows/columns marked N/F.
     """
     score_matrix = np.asarray(score_matrix, dtype=np.float32)
     column_aggregates = np.asarray(column_aggregates, dtype=np.float32)
     r_count, t_count = score_matrix.shape
+    skipped_refs = set(skipped_ref_indices or [])
+    no_face_targets = set(no_face_target_indices or [])
     if r_count == 0 or t_count == 0:
         blank = np.full((cell_h, label_w + cell_w, 3), 255, dtype=np.uint8)
         return bgr_uint8_to_comfy_bhwc(blank)
@@ -191,8 +195,10 @@ def render_comparison_grids(
     fail_bg = (190, 190, 255)
     header_bg = (225, 225, 225)
     label_bg = (215, 215, 215)
+    skipped_bg = (210, 220, 235)
     agg_pass_bg = (130, 220, 130)
     agg_fail_bg = (130, 130, 235)
+    warn_label = (40, 40, 180)
 
     panels: list[torch.Tensor] = []
     n_panels = (t_count + max_cols - 1) // max_cols
@@ -209,23 +215,41 @@ def render_comparison_grids(
 
         for c in range(n_cols):
             t_idx = col_start + c
+            t_num = t_idx + 1
+            col_label = f"T{t_num}" + (" N/F" if t_idx in no_face_targets else "")
             _draw_grid_cell(
                 canvas,
                 label_w + c * cell_w,
                 0,
                 cell_w,
                 cell_h,
-                f"T{t_idx}",
+                col_label,
                 header_bg,
+                warn_label if t_idx in no_face_targets else (24, 24, 24),
+                0.38 if t_idx in no_face_targets else 0.45,
             )
 
         for r in range(r_count):
             row_y = (1 + r) * cell_h
-            _draw_grid_cell(canvas, 0, row_y, label_w, cell_h, f"R{r}", label_bg)
+            r_num = r + 1
+            row_skipped = r in skipped_refs
+            row_label = f"R{r_num}" + (" N/F" if row_skipped else "")
+            _draw_grid_cell(
+                canvas,
+                0,
+                row_y,
+                label_w,
+                cell_h,
+                row_label,
+                label_bg,
+                warn_label if row_skipped else (24, 24, 24),
+                0.38 if row_skipped else 0.45,
+            )
             for c in range(n_cols):
                 t_idx = col_start + c
                 score = float(score_matrix[r, t_idx])
                 label, ok = _format_grid_score(score, match_threshold)
+                cell_bg = skipped_bg if row_skipped or t_idx in no_face_targets else (pass_bg if ok else fail_bg)
                 _draw_grid_cell(
                     canvas,
                     label_w + c * cell_w,
@@ -233,7 +257,7 @@ def render_comparison_grids(
                     cell_w,
                     cell_h,
                     label,
-                    pass_bg if ok else fail_bg,
+                    cell_bg,
                 )
 
         agg_y = (1 + r_count) * cell_h

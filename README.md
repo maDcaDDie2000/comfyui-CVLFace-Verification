@@ -109,8 +109,8 @@ This pack’s alignment code loads only **`detection`**, **`landmark_2d_106`**, 
 | File | Required by this pack |
 |------|------------------------|
 | `det_10g.onnx` | Yes — face detection |
-| `2d106det.onnx` | Yes — 106-point landmarks (default align mode) |
-| `1k3d68.onnx` | Yes — 68-point 3D landmarks (`3d68` / `auto` at high yaw) |
+| `2d106det.onnx` | Yes — 106-point landmarks (`2d106` align mode) |
+| `1k3d68.onnx` | Yes — 68-point 3D landmarks (**default** `3d68` align mode; also used by `auto` at high yaw) |
 | `genderage.onnx` | No — not loaded |
 | `w600k_r50.onnx` | No — recognition head; CVLFace replaces embedding extraction |
 
@@ -153,10 +153,10 @@ Standalone detection + alignment (no embedder required).
 
 | | |
 |---|---|
-| **Inputs** | `image` (`IMAGE`); `align_mode` (`2d106` \| `3d68` \| `auto`); `face_selection` (`largest_area` \| `highest_score` \| `index`); `face_index`; `det_thresh`; `det_size`; `insightface_ctx` (`cuda` \| `cpu`) |
+| **Inputs** | `image` (`IMAGE`); `align_mode` (`3d68` \| `2d106` \| `auto`, default **`3d68`**); `face_selection` (`largest_area` \| `highest_score` \| `index`); `face_index`; `det_thresh`; `det_size`; `insightface_ctx` (`cuda` \| `cpu`) |
 | **Outputs** | `aligned_face`, `landmarks_preview`, `face_meta` |
 
-`auto` alignment switches to 3D 68-point landmarks when \|yaw\| ≥ 35° or 106-point data is missing.
+Default **`3d68`** uses InsightFace 3D 68-point landmarks (generally more stable than 2d106 for frontal faces with head tilt). **`auto`** switches to 3d68 when \|yaw\| ≥ 35° or 106-point data is missing.
 
 #### Face Reference Profile — `FaceReferenceProfile`
 
@@ -234,7 +234,7 @@ Verified against the codebase and upstream model layouts:
 | `Failed to import cuda/cpp RPEIndexFunction` / `setup.py` noise | Upstream CVLFace optional CUDA RPE ops; pure PyTorch RPE fallback still works (slower). |
 | `Tensor.item() cannot be called on meta tensors` | Stale loader — restart ComfyUI and re-run **CVLFace Loader** (pack forces CPU linspace and disables meta init). |
 | `'CVLFaceRecognitionModel' object has no attribute 'all_tied_weights_keys'` | Newer **transformers** (4.50+) vs upstream CVLFace `wrapper.py` — update this pack (calls `post_init()` during load). Do not downgrade transformers unless needed for other nodes. |
-| `No face detected` | Lower `det_thresh`, increase `det_size`, or check image content. |
+| `No face detected` | Lower `det_thresh`, increase `det_size`, or check image content. Frontal faces with **head tilt** (ear toward shoulder, not a profile view) can still fail if the face box is tight — leave margin around the head or try `face_selection=largest_area`. |
 | InsightFace `cuda` slow or errors | Install **`onnxruntime-gpu`**; CPU wheel ignores GPU. |
 | CVLFace CUDA OOM | Use **CVLFace Loader** `device=cpu` (InsightFace can still use GPU separately). |
 
